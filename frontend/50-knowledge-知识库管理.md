@@ -1,6 +1,6 @@
 # knowledge · 知识库管理
 
-> ⬜ **状态：设计已定稿，接口尚未实现。** 文档解析部分还依赖一个待确认的依赖（PDFBox）。
+> ⬜ **状态：设计已定稿，接口尚未实现。** 文档解析走 LangChain4j 官方的 parser 模块（已验证可拉取）。
 
 三层结构：
 
@@ -446,7 +446,7 @@ GET /api/kb/doc/{docId}/chunks?current=1&pageSize=20
 
 | 待定 | 说明 |
 |---|---|
-| PDF / DOCX 解析依赖 | 需要引入 PDFBox 和 POI。**尚未确认是否本期做**——如果不做，则只支持 TXT/MD/HTML/URL |
+| ~~PDF / DOCX 解析依赖~~ | ✅ **已定**：用官方 `langchain4j-document-parser-apache-pdfbox` / `-apache-poi`（`1.20.0-beta30`，传递引入 PDFBox 3.0.7）。**不需要自己引裸依赖** |
 | 上传是否同步 | 建议异步（上传即返回 + 轮询状态） |
 | 查看切片列表的接口 | 强烈建议加，见上文 |
 | 文档预览 | 是否能预览原始文件？需要文件服务。目前没有 |

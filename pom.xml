@@ -17,6 +17,13 @@
     <description>智能星知识助手</description>
     <properties>
         <java.version>21</java.version>
+        <!--
+          LangChain4j 版本。core / 聚合模块走稳定线，各集成是同一版本的 beta 后缀。
+          两个属性必须【一起】升级：集成模块的 pom 里声明依赖的就是稳定版 core，
+          只升一个会导致版本错配。见 knowledge/01-总体架构与路线图.md
+        -->
+        <langchain4j.version>1.20.0</langchain4j.version>
+        <langchain4j.beta.version>1.20.0-beta30</langchain4j.beta.version>
     </properties>
     <dependencies>
         <dependency>
@@ -99,10 +106,68 @@
         </dependency>
 
         <!--
-          LangChain4j 相关依赖待定（Agent / 工具调用 / ChatMemory / 流式）。
-          业务方案确定后再决定引哪些：langchain4j-core、langchain4j-reactor、
-          langchain4j-milvus、langchain4j-community-dashscope-spring-boot-starter。
-          当前刻意一个都不引 —— 免得带进用不到的 Milvus / jsoup 传递依赖。
+          ============ LangChain4j ============
+          注意 core 和聚合模块【职责不同，两个都要显式引】，别只引 core 然后指望传递依赖：
+            langchain4j-core → 接口与 SPI（ScoringModel / EmbeddingStore / ChatMemory / TextSegment / DocumentSplitter）
+            langchain4j      → 具体实现与服务层（AiServices / MessageWindowChatMemory / @Tool / @MemoryId）
+          这个边界容易记错，且类会换模块 —— 升级时回来核对这一块。
+        -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-core</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+
+        <!-- 本地向量模型：模型文件打进 jar，512 维，零下载零调用成本 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-embeddings-bge-small-zh-v15-q</artifactId>
+            <version>${langchain4j.beta.version}</version>
+        </dependency>
+        <!-- 本地重排模型：只给 ScoringModel 实现，模型文件需单独下载（见 knowledge/21） -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-onnx-scoring</artifactId>
+            <version>${langchain4j.beta.version}</version>
+        </dependency>
+
+        <!-- 向量库 Milvus。这是 legacy 模块（带 milvus-sdk-java:2.5.9，故服务端 2.5.27 不用动）；
+             LangChain4j 2.0 会用 langchain4j-milvus-v2 取代它 —— 已知技术债，见 knowledge/01 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-milvus</artifactId>
+            <version>${langchain4j.beta.version}</version>
+        </dependency>
+
+        <!-- 流式输出（SSE） -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-reactor</artifactId>
+            <version>${langchain4j.beta.version}</version>
+        </dependency>
+
+        <!-- 文档解析：PDF / Word。自身传递引入 pdfbox 3.0.7 与 poi，不需要再手写裸依赖 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-document-parser-apache-pdfbox</artifactId>
+            <version>${langchain4j.beta.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-document-parser-apache-poi</artifactId>
+            <version>${langchain4j.beta.version}</version>
+        </dependency>
+
+        <!--
+          暂【不】引 langchain4j-community-dashscope-spring-boot-starter（远端 qwen 对话模型）：
+          它是 Spring 自动配置，要求 langchain4j.community.dashscope.chat-model.api-key；
+          在没有 DASHSCOPE_API_KEY 的环境里会让整个应用启动失败。
+          等做「对话与流式」那个里程碑时再引，并同步补配置。
         -->
     </dependencies>
 
