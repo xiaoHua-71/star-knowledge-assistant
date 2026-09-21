@@ -180,6 +180,22 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+
+            <!--
+              onnxruntime 的版本裁决（两个 LC4j 模块声明的版本不一致）：
+                langchain4j-embeddings（向量）  声明 1.20.0，深度 2
+                langchain4j-onnx-scoring（重排）声明 1.22.0，深度 1
+              Maven「取近者」会选 1.22.0 —— 但 1.22.0 的原生库在本机加载失败
+              （UnsatisfiedLinkError: 动态链接库(DLL)初始化例程失败），所以显式钉回 1.20.0，
+              这也正是 langchain4j-embeddings 自己声明的版本。
+              若哪天换机器后 1.22.0 可用，可以去掉这段让它自然解析。
+              详见 knowledge/21-本地Embedding与Rerank.md
+            -->
+            <dependency>
+                <groupId>com.microsoft.onnxruntime</groupId>
+                <artifactId>onnxruntime</artifactId>
+                <version>1.20.0</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
