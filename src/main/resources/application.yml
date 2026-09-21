@@ -1,0 +1,87 @@
+# 智能星知识助手 · 公共配置
+# 默认 dev 环境（keys 直接写在本文件，没有额外的 application-dev.yml）
+
+spring:
+  application:
+    name: 智能星知识助手
+  profiles:
+    active: dev
+
+  # 登录态：classpath 上有 spring-session-data-redis，Spring Boot 3 会**自动**把
+  # session 存到 Redis（Boot 3 已移除 spring.session.store-type 属性，不用再显式打开）。
+  # 好处是重启不掉线、后面多实例部署也不用粘性会话。
+  # 注意：往 session 里放的 User 必须可序列化 —— 它已经 implements Serializable。
+  session:
+    # 30 天过期
+    timeout: 2592000
+    redis:
+      # 默认就是 spring:session，写出来是为了让「session 在 Redis 里」这件事一眼可见
+      namespace: star:session
+
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/star_assistant
+    username: root
+    password: root
+
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+
+  # 邮件（邮箱注册验证码）。这段不能省：缺了 JavaMailSender bean 不会创建，启动直接失败。
+  # todo 换成自己的 SMTP 账号
+  mail:
+    host: smtp.qq.com
+    port: 587
+    username: your_email@qq.com
+    password: your_auth_code
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+
+  # 文件上传
+  servlet:
+    multipart:
+      max-file-size: 10MB
+
+server:
+  address: 0.0.0.0
+  # salary-leap 占着 8101，这里避开
+  port: 8102
+  servlet:
+    context-path: /api
+    session:
+      cookie:
+        max-age: 159200
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: false
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      logic-delete-field: isDelete # 全局逻辑删除的实体字段名
+      logic-delete-value: 1 # 逻辑已删除值（默认为 1）
+      logic-not-delete-value: 0 # 逻辑未删除值（默认为 0）
+
+# 接口文档（knife4j 基于 springdoc），入口 http://localhost:8102/api/doc.html
+springdoc:
+  info:
+    title: 智能星知识助手 API
+    description: 智能星知识助手后端接口文档
+    version: 1.0
+    contact:
+      name: XiaoHua
+knife4j:
+  enable: true
+
+# 向量库（Milvus）。
+# 当前只是配置占位，没有 Java 代码读它 —— LangChain4j / Milvus 客户端依赖待业务方案确定后再引。
+# 用项目根目录自带的 docker-compose.yml 起（etcd + minio + milvus v2.5.27），容器名带 star- 前缀，
+# 数据落在 ./volumes/。注意它和 salary-leap 那套都占 19530，不能同时启动。
+milvus:
+  host: localhost
+  port: 19530
+  collection-name: star_knowledge
+  dimension: 1536

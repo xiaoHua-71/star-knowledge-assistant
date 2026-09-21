@@ -1,0 +1,89 @@
+# ---------- 构建产物 ----------
+target/
+build/
+out/
+bin/
+*.class
+
+# 打包产物（本机打出来的 jar/war 不提交）
+*.jar
+*.war
+*.ear
+*.nar
+
+# Maven 发布/版本插件生成的临时文件
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+.flattened-pom.xml
+buildNumber.properties
+
+# ---------- IDE ----------
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Eclipse / STS
+.settings/
+.project
+.classpath
+.factorypath
+.apt_generated/
+
+# NetBeans
+nbproject/private/
+nbbuild/
+dist/
+nbdist/
+
+# VS Code
+.vscode/
+
+# ---------- 编辑器临时文件 ----------
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+
+# ---------- 操作系统 ----------
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---------- 日志与运行期产物 ----------
+logs/
+*.log
+*.log.*
+*.hprof
+hs_err_pid*.log
+replay_pid*.log
+*.dump
+*.dumpstream
+*.dumpStream
+
+# ---------- 本地环境 / 密钥 ----------
+.env
+.env.*
+*.local
+# Spring Boot 本地配置（放本机密钥用，不提交）
+application-local.yml
+application-local.yaml
+application-local.properties
+
+# ---------- RAG 索引的本地状态（指向本机 Milvus 里的集合，不该跟着代码走）----------
+milvus-current-collection.txt
+milvus-index-manifest.txt
+
+# ---------- Docker Milvus 的数据卷（体积大，且是本机状态，不该提交）----------
+volumes/
+
+# ---------- 测试 / 覆盖率 ----------
+surefire-reports/
+failsafe-reports/
+jacoco.exec
