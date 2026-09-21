@@ -171,6 +171,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         User loginUser = this.getLoginUser(request);
         Long userId = loginUser.getId();
 
+        // 两个字段都为空时下面不会生成任何 SET 子句，会拼出非法的 UPDATE 语句，
+        // 提前拦掉，避免把 SQL 语法异常当成「未登录」抛给前端
+        if (StrUtil.isBlank(userUpdateRequest.getNickname()) && StrUtil.isBlank(userUpdateRequest.getAvatar())) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "昵称和头像不能同时为空");
+        }
+
         User updateUser = new User();
         updateUser.setId(userId);
 
