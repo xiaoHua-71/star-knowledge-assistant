@@ -92,6 +92,13 @@
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
         </dependency>
+        <!-- HTML/网页正文提取（「添加网页」与 .html 上传）。官方没有 html/md/txt 的 parser 模块，
+             这几个格式自己处理：TXT/MD 直读，HTML 用 jsoup 去标签取正文。 -->
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>1.17.2</version>
+        </dependency>
 
         <dependency>
             <groupId>org.projectlombok</groupId>

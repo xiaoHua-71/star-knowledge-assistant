@@ -77,11 +77,42 @@ knife4j:
   enable: true
 
 # 向量库（Milvus）。
-# 当前只是配置占位，没有 Java 代码读它 —— LangChain4j / Milvus 客户端依赖待业务方案确定后再引。
 # 用项目根目录自带的 docker-compose.yml 起（etcd + minio + milvus v2.5.27），容器名带 star- 前缀，
 # 数据落在 ./volumes/。注意它和 salary-leap 那套都占 19530，不能同时启动。
+#
+# ⚠️ 维度是「每个知识库」的记录，不在这里：knowledge_base 表存了每个库建库时的
+#    embeddingModel 与 dimension（512）。下面的 dimension 只作为新建知识库的默认值。
+#    集合名也按库派生：star_kb_{id}，所以这里只配前缀。
 milvus:
   host: localhost
   port: 19530
-  collection-name: star_knowledge
-  dimension: 1536
+  collection-prefix: star_kb_
+  # 本地 bge-small-zh-v1.5-q 的输出维度，必须与模型一致（见 knowledge/21）
+  dimension: 512
+
+# AI 相关开关
+ai:
+  rerank:
+    # 本地重排模型的模型文件尚未落地（见 knowledge/21），默认关闭：
+    # 检索只走向量召回。开启后需要 ScoringModel 实现存在，否则启动即失败（缺 bean）。
+    # 开启时下面两个路径必须存在，否则启动即报错（快速失败，别拖到第一次 rerank）。
+    enabled: false
+    model-path: ./models/bge-reranker/model.onnx
+    tokenizer-path: ./models/bge-reranker/tokenizer.json
+
+# 知识库原始文件落盘目录（knowledge_document.filePath）
+knowledge:
+  storage-dir: ./uploads
+
+  # 检索链路参数（见 knowledge/23）。⚠️ 以下数值全部「未标定」：
+  # 沿用 salary-leap 的经验值作为起点，本项目语料不同，要定最优值必须先有评测集（knowledge/60）。
+  search:
+    hybrid-enabled: true    # 关掉退化成纯向量检索
+    vector-recall: 20       # 向量这一路召回多少候选
+    bm25-recall: 20         # BM25 这一路召回多少候选
+    rrf-k: 60               # RRF 平滑常数，原论文默认 60
+    max-candidates: 30      # 融合去重后、送进 rerank 前的候选上限
+    max-per-source: 2       # 同一文档最多占最终 topK 的几个位置；<=0 不限制
+    # ⚠️ 不要照抄 salary-leap 的 0.2。0.2 是远端 text-embedding-v2 的分布；
+    # 本地 bge-small-zh 连无关问题都给 0.676（M1 实测），0.2 形同虚设。默认不过滤。
+    min-score: 0.0

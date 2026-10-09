@@ -80,6 +80,12 @@ application-local.properties
 milvus-current-collection.txt
 milvus-index-manifest.txt
 
+# ---------- 本地模型文件（rerank 用的 ONNX 模型要单独下载，体积可达 GB 级）----------
+models/
+
+# ---------- 知识库上传的原始文件（落盘到 knowledge.storage-dir）----------
+uploads/
+
 # ---------- Docker Milvus 的数据卷（体积大，且是本机状态，不该提交）----------
 volumes/
 
