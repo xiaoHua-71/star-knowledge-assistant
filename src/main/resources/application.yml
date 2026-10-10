@@ -93,11 +93,14 @@ milvus:
 # AI 相关开关
 ai:
   rerank:
-    # 本地重排模型的模型文件尚未落地（见 knowledge/21），默认关闭：
-    # 检索只走向量召回。开启后需要 ScoringModel 实现存在，否则启动即失败（缺 bean）。
-    # 开启时下面两个路径必须存在，否则启动即报错（快速失败，别拖到第一次 rerank）。
+    # 本地重排模型已落地（BAAI/bge-reranker-base 的 ONNX + tokenizer，见 knowledge/21）。
+    # 开了它就参与检索链路的精排；关掉则退回 RRF 融合顺序。
+    # 两个路径必须存在，否则【启动即失败】——快速失败，别拖到第一次 rerank（M0 坑 1 的教训）。
+    # 模型文件体积大（约 1.1GB），不进版本库（models/ 已 gitignore），换机器需重新下载。
     enabled: false
-    model-path: ./models/bge-reranker/model.onnx
+    # 用 int8 量化版（278MB），不是 fp32（1.1GB）：本机 16G 内存常被 IDE + Docker Milvus 占掉大半，
+    # fp32 加载直接 ORT "bad allocation"。量化版省内存也更快，精度损失很小。
+    model-path: ./models/bge-reranker/model-int8.onnx
     tokenizer-path: ./models/bge-reranker/tokenizer.json
 
 # 知识库原始文件落盘目录（knowledge_document.filePath）

@@ -1,5 +1,7 @@
 package com.xiaohua.star.config;
 
+import ai.onnxruntime.OrtException;
+import ai.onnxruntime.OrtSession;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.embedding.onnx.bgesmallzhv15q.BgeSmallZhV15QuantizedEmbeddingModel;
 import dev.langchain4j.model.scoring.ScoringModel;
@@ -50,7 +52,29 @@ public class AiModelConfig {
         requireExists(modelPath, "rerank 模型文件");
         requireExists(tokenizerPath, "rerank tokenizer 文件");
         log.info("加载本地重排模型: model={}, tokenizer={}", modelPath, tokenizerPath);
-        return new OnnxScoringModel(modelPath, tokenizerPath);
+        return new OnnxScoringModel(modelPath, sessionOptions(), tokenizerPath);
+    }
+
+    /**
+     * ONNX Runtime 会话选项。
+     *
+     * <p><b>为什么要关内存池</b>：ORT 默认用 BFC 内存池并做内存模式预分配，会一次性预留
+     * 一大块连续内存。在本机这种「16G 内存被 IDE + Docker Milvus 占掉大半」的环境里，
+     * 加载/推理时会直接抛 {@code Failed to allocate ... BFCArena::AllocateRawInternal}（实测踩到）。
+     * 关掉内存池与内存模式预分配，改为按需分配，峰值内存明显下降——代价是少量性能（本场景可忽略）。
+     */
+    private static OrtSession.SessionOptions sessionOptions() {
+        try {
+            OrtSession.SessionOptions options = new OrtSession.SessionOptions();
+            options.setCPUArenaAllocator(false);
+            options.setMemoryPatternOptimization(false);
+            // 关掉图优化：ORT 默认会把模型重写成「优化后的副本」，等于在内存里多存一份模型。
+            // 内存紧的机器上这一步常常就是压垮骆驼的那根稻草（本机实测）。代价是推理稍慢。
+            options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.NO_OPT);
+            return options;
+        } catch (OrtException e) {
+            throw new IllegalStateException("构造 ONNX SessionOptions 失败: " + e.getMessage(), e);
+        }
     }
 
     private static void requireExists(String path, String what) {

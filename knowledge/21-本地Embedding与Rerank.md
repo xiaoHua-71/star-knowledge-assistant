@@ -103,9 +103,24 @@ query → 【embedding】→ 召回 N 条 → 【rerank】→ 取 Top-K → 拼�
 
 **选它的理由**：中文场景、512 维（存储和计算都省）、量化版体积小、**模型打进 jar 所以部署时零额外下载**。
 
-### Rerank：`OnnxScoringModel` + 自备模型文件 ｜ ⬜ 未落地
+### Rerank：`OnnxScoringModel` + 自备模型文件 ｜ 🟡 已接入，默认关闭
 
-计划用 `langchain4j-onnx-scoring` 加一个 bge-reranker 模型文件。**模型文件来源还没定**（见第五节），所以这一块**是当前唯一没跑通的环节**。兜底方案是保留 salary-leap 的 `QwenScoringModel`（远端 DashScope rerank），用配置开关切换——因为 `KnowledgeService` 注入的是 `ScoringModel` 接口，换实现不用改调用方。
+用官方 `langchain4j-onnx-scoring` + **自备模型文件**。接线全部就位（`AiModelConfig` 的 `ScoringModel` bean、`ai.rerank.enabled` 开关、检索里的调用与降级），模型文件也已落地：
+
+| 项 | 值 |
+|---|---|
+| 模型 | `BAAI/bge-reranker-base`（XLM-RoBERTa cross-encoder） |
+| 来源 | ModelScope 的 `Xenova/bge-reranker-base`（hf-mirror **不通**，ModelScope 通） |
+| 用的文件 | `onnx/model_int8.onnx`（**278MB**）+ `tokenizer.json`（17MB），放在 `models/bge-reranker/`（gitignore） |
+| ONNX 输入 | `input_ids` + `attention_mask`（无 `token_type_ids`）——与 `OnnxScoringBertCrossEncoder` 的期望一致，已实测 |
+| 开关 | `ai.rerank.enabled`，**默认 false**（原因见坑 1） |
+| 内存优化 | 代码里关掉了 ORT 的 BFC 内存池、内存模式预分配、图优化（`AiModelConfig.sessionOptions()`） |
+
+**为什么默认 false**：见坑 1——本机内存不足以跑推理。接线与模型都在，腾出内存后把开关改 `true` 即可启用。
+
+**没用 fp32**：同一仓库有 `onnx/model.onnx`（1.11GB fp32），本机内存紧时连加载都 `bad allocation`，故取 int8。那份 fp32 已删（死重，int8 够用）。
+
+**兜底方案仍在**：`QwenScoringModel`（远端 DashScope rerank）——因为注入的是 `ScoringModel` 接口，换实现不用改调用方。
 
 ### 对话模型保持远端
 
@@ -221,24 +236,29 @@ bge-small-zh 的类 Javadoc 明确写着：
 
 | 没做 | 影响 | 备注 |
 |---|---|---|
-| **rerank 模型文件** | rerank 这一环还没跑通 | 当前最大缺口，见下 |
-| 模型预热 | 首次调用要加载模型（实测约 5 秒级），第一个用户会等 | 可以在 `ApplicationReadyEvent` 里 embed 一句预热 |
+| ~~**rerank 模型文件**~~ | ✅ 已落地（int8，见上节）；但本机内存不足，默认关闭 | 见坑 1 |
+| 模型预热 | 首次调用要加载模型（embedding 约 5 秒级；rerank 加载后启动从 4.2s 增到 8.4s），第一个用户会等 | 可在 `ApplicationReadyEvent` 里预热 |
 | 多模型热切换 | 一个进程只能用一套模型 | 换模型要重启 + 重建索引 |
-| GPU 加速 | ONNX 走 CPU | 当前数据量下 CPU 够用；笔记见下 |
-| 模型文件的版本管理 | 打包进 jar（embedding），无法热替换 | 换取的是部署零下载 |
+| GPU 加速 | ONNX 走 CPU | 当前数据量下 CPU 够用 |
+| 模型文件的版本管理 | embedding 打包进 jar；rerank 放磁盘、**不进版本库** | 换机器需重下 rerank 模型 |
 
-### 待验证（下一件事）
+### 坑：本机内存不足以跑 rerank 推理
 
-**rerank 的模型文件从哪来。** 这是唯一还没落地的环节，需要在 M2 之前解决：
+**现象**（2026-10-10 实测，M2）：接线与模型都就位后，`ai.rerank.enabled=true`：
+- `mvn spring-boot:run` 启动直接失败：`Load model ... failed: bad allocation`（**双 JVM**——maven 一个 + 应用一个——把内存吃爆）
+- 改用 `java -jar`（单 JVM）能**加载**模型，但**推理**时 `DynamicQuantizeLinear` / `Erf` 节点 `bad allocation` → 按设计降级回 RRF 顺序
+- 期间连 shell 都 `fork: Resource temporarily unavailable` —— 是**系统级内存耗尽**，不是模型大小问题
 
-| 候选模型 | 说明 |
-|---|---|
-| `Xenova/ms-marco-MiniLM-L-6-v2` | 小、英文，**适合先把链路试通**，中文效果差 |
-| `BAAI/bge-reranker-base` | 中文可用，体积适中 |
-| `BAAI/bge-reranker-v2-m3` | 多语言效果最好，但 fp32 约 2.2 GB，要找量化版 |
+**定位过程**：写了个精简 JVM（`-Xmx256m`、无 Spring、无 embedding 模型）单独加载 int8 模型 → **成功**（`LOADED OK, inputs=[input_ids, attention_mask]`）。所以模型没问题，是「Spring 应用 + 已加载的 embedding 模型」的叠加把 headroom 吃光了。
 
-**下载通道**（国内网络，按优先级）：ModelScope（魔搭，最稳）→ `hf-mirror.com`（`HF_ENDPOINT=https://hf-mirror.com`）→ 官站最后。
+**根因**：本机 16G 内存，实测只余 ~1.7G（IntelliJ 3.1G、WSL/Docker Milvus 1.1G、若干 VS Code 窗口…）。应用带 rerank 模型的工作集约 **1.03G**，再加推理的临时分配就爆了。
 
-**必须做的两件事**：
-1. 模型文件放 `models/` 并加进 `.gitignore`（体积大，不进版本库）
-2. **启动时校验文件存在，缺失就快速失败**——别拖到第一次 rerank 才报错（这正是坑 1 的教训）
+**处理**：
+1. 代码侧已做能做的内存优化（关 ORT 内存池 / 内存模式 / 图优化，见 `AiModelConfig.sessionOptions()`）
+2. **默认 `ai.rerank.enabled=false`**——避免留下「应用起不来」的默认状态
+3. 要启用：先腾出 ≥1.5G 内存（关掉 IntelliJ 最省事），再把开关改 `true`；启动用**单 JVM**（`java -jar`，或 `mvn spring-boot:run -Dspring-boot.run.fork=false`）避免双 JVM
+
+**另**：`models/bge-reranker/model.onnx`（1.11GB fp32）本机加载不了，已删（死重，int8 够用）。
+
+> **抽象教训**：这次卡点不在代码，在**运行环境**。文档把「怎么启用 + 需要多少内存 + 怎么启动」写下来，
+> 免得下次又从头排查一遍（与坑 1 的 onnxruntime 版本坑同类：报错里没有任何线索指向根因）。
