@@ -14,6 +14,7 @@ import com.xiaohua.star.model.entity.KnowledgeChunk;
 import com.xiaohua.star.model.entity.KnowledgeDocument;
 import com.xiaohua.star.model.enums.DocumentStatusEnum;
 import com.xiaohua.star.model.enums.FileTypeEnum;
+import com.xiaohua.star.model.vo.KnowledgeChunkVO;
 import com.xiaohua.star.model.vo.KnowledgeDocumentVO;
 import com.xiaohua.star.service.FileStorageService;
 import com.xiaohua.star.service.KbIndexService;
@@ -176,6 +177,17 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
     }
 
     @Override
+    public IPage<KnowledgeChunkVO> listChunks(Long docId, int current, int pageSize, Long userId) {
+        getOwnedOrThrow(docId, userId);
+        int safeCurrent = Math.max(current, 1);
+        int safePageSize = Math.min(Math.max(pageSize, 1), 100);
+        Page<KnowledgeChunk> page = chunkMapper.selectPage(
+                new Page<>(safeCurrent, safePageSize),
+                new QueryWrapper<KnowledgeChunk>().eq("docId", docId).orderByAsc("chunkIndex"));
+        return page.convert(this::toChunkVO);
+    }
+
+    @Override
     public KnowledgeDocument getOwnedOrThrow(Long docId, Long userId) {
         if (docId == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "id 不能为空");
@@ -194,6 +206,16 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
     public KnowledgeDocumentVO toVO(KnowledgeDocument document) {
         KnowledgeDocumentVO vo = new KnowledgeDocumentVO();
         BeanUtils.copyProperties(document, vo);
+        return vo;
+    }
+
+    private KnowledgeChunkVO toChunkVO(KnowledgeChunk chunk) {
+        KnowledgeChunkVO vo = new KnowledgeChunkVO();
+        vo.setId(chunk.getId());
+        vo.setChunkIndex(chunk.getChunkIndex());
+        vo.setCharCount(chunk.getCharCount());
+        vo.setTokenCount(chunk.getTokenCount());
+        vo.setContent(chunk.getContent());
         return vo;
     }
 }

@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.xiaohua.star.ai.Bm25IndexRegistry;
 import com.xiaohua.star.ai.ChunkSplitterFactory;
 import com.xiaohua.star.ai.DocumentParserFactory;
+import com.xiaohua.star.ai.IndexDiff;
 import com.xiaohua.star.ai.EmbeddingEngine;
 import com.xiaohua.star.ai.MilvusStoreFactory;
 import com.xiaohua.star.common.ErrorCode;
@@ -36,7 +37,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 
@@ -122,6 +125,10 @@ public class KbIndexServiceImpl implements KbIndexService {
         }
 
         try {
+            // 先记下「进来时是否已经是 INDEXED」：一旦往下走状态就被改了，
+            // 早返回的判据必须在改状态【之前】取（踩过的坑，见 knowledge/24）。
+            boolean wasIndexed = DocumentStatusEnum.INDEXED.name().equals(doc.getStatus());
+
             // ① 解析
             setStatus(doc, DocumentStatusEnum.PARSING);
             Document parsed = parse(doc);
@@ -131,36 +138,59 @@ public class KbIndexServiceImpl implements KbIndexService {
                 refreshKbStatus(kb.getId());
                 return;
             }
-            doc.setCharCount(text.length());
-            doc.setContentHash(SecureUtil.md5(text));
-            setStatus(doc, DocumentStatusEnum.PARSED);
-            refreshKbStatus(kb.getId());
 
-            // ② 切片
+            // ② 切片，并算出每片的新 vectorId（确定性：同内容同位置 → 同 id）
             List<TextSegment> segments = chunkSplitterFactory.split(text, kb.getChunkSize(), kb.getChunkOverlap());
             if (segments.isEmpty()) {
                 markFailed(doc, "切片结果为空");
                 refreshKbStatus(kb.getId());
                 return;
             }
+            List<KnowledgeChunk> newChunks = buildChunks(doc, kb, segments);
+            List<String> newIds = newChunks.stream().map(KnowledgeChunk::getVectorId).toList();
 
-            // ③ 清掉这篇文档的旧切片与旧向量（重试/重建场景）
-            clearDocumentData(doc, kb);
+            // ③ 增量 diff：跟旧的 vectorId 集合比，只处理变化的部分（见 knowledge/24）
+            List<String> oldIds = chunkMapper.selectList(new QueryWrapper<KnowledgeChunk>()
+                            .select("vectorId").eq("docId", docId))
+                    .stream().map(KnowledgeChunk::getVectorId).toList();
+            IndexDiff.Result diff = IndexDiff.diff(oldIds, newIds);
 
+            if (diff.noChange() && wasIndexed) {
+                // 切片集合与上次完全一致 → 整篇跳过：不重新嵌入、不写任何向量，连状态都不动。
+                // 这正是「改 1 篇只动 1 篇」的实现：其余文档重解析重切后，id 全部命中，零写入。
+                log.info("文档内容未变化，跳过索引 docId={}, chunks={}", docId, newIds.size());
+                return;
+            }
+
+            doc.setCharCount(text.length());
+            doc.setContentHash(SecureUtil.md5(text));
+            setStatus(doc, DocumentStatusEnum.PARSED);
+            refreshKbStatus(kb.getId());
             setStatus(doc, DocumentStatusEnum.INDEXING);
 
-            // ④ 先写 MySQL 切片行（权威源）
-            List<KnowledgeChunk> chunks = buildChunks(doc, kb, segments);
-            chunkService.saveBatch(chunks);
+            // ④ 先删消失的：Milvus 向量在前（先减「会被召回的东西」），再删 MySQL 行
+            if (!diff.toDelete().isEmpty()) {
+                deleteVectors(kb.getId(), diff.toDelete());
+                chunkMapper.delete(new QueryWrapper<KnowledgeChunk>()
+                        .eq("docId", docId).in("vectorId", diff.toDelete()));
+            }
 
-            // ⑤ 再写 Milvus 向量（显式 id = vectorId，可幂等覆盖）
-            writeVectors(kb, segments, chunks);
+            // ⑤ 再写新增的：MySQL 切片行在前、Milvus 向量在后；只嵌入新增的切片
+            if (!diff.toInsert().isEmpty()) {
+                Set<String> insertIds = new HashSet<>(diff.toInsert());
+                List<KnowledgeChunk> toInsert = newChunks.stream()
+                        .filter(chunk -> insertIds.contains(chunk.getVectorId()))
+                        .toList();
+                chunkService.saveBatch(toInsert);
+                writeVectors(kb, toInsert);
+            }
 
             // ⑥ 收尾
-            doc.setChunkCount(chunks.size());
+            doc.setChunkCount(newIds.size());
             setStatus(doc, DocumentStatusEnum.INDEXED);
             refreshKbStatus(kb.getId());
-            log.info("文档索引完成 docId={}, chunks={}", docId, chunks.size());
+            log.info("文档索引完成 docId={}, 切片={}, 新增={}, 删除={}, 未变={}",
+                    docId, newIds.size(), diff.toInsert().size(), diff.toDelete().size(), diff.unchanged());
         } catch (Exception e) {
             log.error("文档索引失败 docId={}", docId, e);
             markFailed(doc, e.getMessage());
@@ -183,8 +213,11 @@ public class KbIndexServiceImpl implements KbIndexService {
         kbIndexExecutor.execute(() -> {
             try {
                 if (full) {
-                    // 全量：先删整个集合，从零重建（对账/换参数场景）
+                    // 全量：先删整个集合 + 清掉该库全部切片行，从零重建（换模型/换参数/对账场景）。
+                    // ⚠️ 必须连带删切片行：否则切片级 diff 会看到「id 都在、没变」而跳过嵌入，
+                    // 于是 Milvus 被清空、向量却不再写入 —— 静默丢数据（见 knowledge/24 坑 1）。
                     milvusStoreFactory.dropCollection(kb.getCollectionName());
+                    chunkMapper.delete(new QueryWrapper<KnowledgeChunk>().eq("kbId", kbId));
                 }
                 List<KnowledgeDocument> docs = documentMapper.selectList(
                         new QueryWrapper<KnowledgeDocument>().eq("kbId", kbId));
@@ -297,7 +330,10 @@ public class KbIndexServiceImpl implements KbIndexService {
         return chunks;
     }
 
-    private void writeVectors(KnowledgeBase kb, List<TextSegment> segments, List<KnowledgeChunk> chunks) {
+    private void writeVectors(KnowledgeBase kb, List<KnowledgeChunk> chunks) {
+        if (chunks.isEmpty()) {
+            return;
+        }
         List<TextSegment> segmentsWithMeta = new ArrayList<>(chunks.size());
         List<String> ids = new ArrayList<>(chunks.size());
         for (KnowledgeChunk chunk : chunks) {
@@ -312,24 +348,6 @@ public class KbIndexServiceImpl implements KbIndexService {
 
         EmbeddingStore<TextSegment> store = milvusStoreFactory.getStore(kb.getCollectionName(), kb.getDimension());
         store.addAll(ids, embeddings, segmentsWithMeta);
-    }
-
-    private void clearDocumentData(KnowledgeDocument doc, KnowledgeBase kb) {
-        List<String> oldIds = chunkMapper.selectList(new QueryWrapper<KnowledgeChunk>()
-                        .select("vectorId")
-                        .eq("docId", doc.getId()))
-                .stream()
-                .map(KnowledgeChunk::getVectorId)
-                .toList();
-        if (!oldIds.isEmpty()) {
-            try {
-                deleteVectors(kb.getId(), oldIds);
-            } catch (Exception e) {
-                // 旧向量删不掉不致命：新切片会用同样的确定性 id 覆盖大部分旧向量
-                log.warn("清理旧向量失败 docId={}", doc.getId(), e);
-            }
-            chunkMapper.delete(new QueryWrapper<KnowledgeChunk>().eq("docId", doc.getId()));
-        }
     }
 
     /**

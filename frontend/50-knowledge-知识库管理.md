@@ -6,11 +6,12 @@
 >   解析走官方 `langchain4j-document-parser-apache-{pdfbox,poi}`；TXT/MD 直读、HTML/网页用 jsoup。
 > - ✅ **检索已是混合检索**（M3）：向量 + BM25 双路召回 → RRF 融合 → 来源多样性（同一篇文档默认最多占 2 格）。
 >   各参数在 `knowledge.search.*`（**未标定**，见 [knowledge/23](../knowledge/23-混合检索与融合.md)）。
+> - ✅ **重建已是真增量**（M3）：`full=false` 逐篇比对切片指纹，只重算变化的切片（见 [knowledge/24](../knowledge/24-增量索引.md)）。
 > - ⚠️ **`/search` 的 `score` 语义随配置变**：开 rerank 时是 **rerank 分**；关 rerank 时是 **RRF 融合分**
 >   （很小，约 1/60 量级；即使关掉 `hybrid-enabled` 也是单路 RRF，只是恰好等价于按向量顺序）。
 >   两者量纲不同，**`score` 只适合相对比较，绝不要当百分比展示**。rerank 默认关闭（`ai.rerank.enabled=false`）。
 > - ⚠️ **上传/重建是异步的**：接口立刻返回 `status=PENDING`，务必按下方约定轮询状态，不要显示成「已完成」。
-> - ⬜ **未实现**：查看切片列表接口、文档预览（见文末「待定项」）。
+> - ⬜ **未实现**：原文文件预览/下载（见文末「待定项」）。切片列表已实现（`GET /kb/doc/{docId}/chunks`）。
 
 三层结构：
 
@@ -188,9 +189,16 @@ POST /api/kb/{id}/rebuild?full=false
 
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `full` | boolean | `false` | `false` 增量重建（只处理变过的文档）；`true` 全量重建 |
+| `full` | boolean | `false` | `false` **增量**（逐篇比对切片指纹，只重算变过的切片）；`true` **全量**（丢开比对，全部重切重嵌） |
 
 响应：`data` 是 `true`（**异步任务，接口立刻返回**）
+
+**⚠️ `full=true` 会让检索在重建期间短暂为空。** 全量重建的第一步是**丢弃整个向量集合**
+（换模型/换参数时旧向量必须作废），然后逐篇重建；在重建完成前，检索要么返回空、要么只返回已重建的部分。
+**所以全量重建应在无人使用时做**，不要和在线检索并发。增量重建（`full=false`）没有这个问题——
+它只动变化的切片，过程中旧向量一直都在。
+
+增量重建的明细见 [knowledge/24](../knowledge/24-增量索引.md)：改 1 篇文档只重算那 1 篇变化的切片，其余文档零写入。
 
 **⚠️ 这是异步操作。** 返回成功只表示「任务已提交」。要轮询状态接口：
 
@@ -450,18 +458,42 @@ POST /api/kb/doc/{id}/reindex
 
 列表页展示库的汇总状态，详情页展示每个文档的状态。
 
-### 3. 切片内容用户可以看
+### 3. 切片内容用户可以看 ✅ 已实现
 
 `chunkCount` 只是数字，但**用户往往想看「它到底把我的文档切成了什么」**——这能建立信任，也能帮助用户理解为什么某些问题查不到。
 
-目前**没有**「查看切片列表」的接口。如果需要（强烈建议要），应该加：
-
 ```
 GET /api/kb/doc/{docId}/chunks?current=1&pageSize=20
-→ { chunkIndex, content, tokenCount }
 ```
 
-这条**标记为待定**，请确认是否需要。
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `current` | number | 页码，默认 1 |
+| `pageSize` | number | 每页大小，默认 10，**上限 100** |
+
+响应：分页结构，`records` 是切片数组，**按 `chunkIndex` 升序**（即文档内的原始顺序）。
+
+```json
+{
+  "code": 0,
+  "data": {
+    "records": [
+      { "id": "1024", "chunkIndex": 0, "charCount": 365, "tokenCount": null,
+        "content": "第一章 远程办公规定\n\n公司实行混合办公制度……" },
+      { "id": "1025", "chunkIndex": 1, "charCount": 220, "tokenCount": null,
+        "content": "员工应妥善保管公司账号与设备……" }
+    ],
+    "total": "2", "size": "10", "current": "1", "pages": "1"
+  },
+  "message": "ok"
+}
+```
+
+**注意**：
+
+- `tokenCount` **目前恒为 `null`**（真实 tokenizer 尚未接入，见 [knowledge/22](../knowledge/22-知识库与文档生命周期.md) 坑 4）；`charCount` 是准的。
+- 文档**还没索引完**（状态不是 `INDEXED`）或**索引失败**时，`records` 是**空数组**，这是正常情况，不是错误。
+- 只能查看**自己**文档的切片（他人文档返回 `40400` 不存在）。
 
 ## 待定项
 
@@ -469,7 +501,7 @@ GET /api/kb/doc/{docId}/chunks?current=1&pageSize=20
 |---|---|
 | ~~PDF / DOCX 解析依赖~~ | ✅ **已定**：用官方 `langchain4j-document-parser-apache-pdfbox` / `-apache-poi`（`1.20.0-beta30`，传递引入 PDFBox 3.0.7）。**不需要自己引裸依赖** |
 | ~~上传是否同步~~ | ✅ **已定：异步**（上传即返回 `status=PENDING` + 轮询 `/kb/{id}/status`） |
-| 查看切片列表的接口 | 强烈建议加，见上文（**尚未实现**） |
+| ~~查看切片列表的接口~~ | ✅ **已实现**：`GET /kb/doc/{docId}/chunks`，见上文第三节 |
 | 文档预览 | 是否能预览原始文件？需要文件服务。目前没有 |
 | 单次上传多个文件 | 目前设计成一次一个 |
 | 知识库容量上限（文档数 / 切片数） | 尚未限制 |

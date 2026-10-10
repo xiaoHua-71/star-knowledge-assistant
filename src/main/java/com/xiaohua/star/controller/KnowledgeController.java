@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.xiaohua.star.common.BaseResponse;
 import com.xiaohua.star.common.DeleteRequest;
 import com.xiaohua.star.common.ErrorCode;
+import com.xiaohua.star.common.PageRequest;
 import com.xiaohua.star.common.ResultUtils;
 import com.xiaohua.star.exception.BusinessException;
 import com.xiaohua.star.model.dto.knowledge.KnowledgeBaseCreateRequest;
@@ -19,6 +20,7 @@ import com.xiaohua.star.model.entity.User;
 import com.xiaohua.star.model.vo.KbBuildStatusVO;
 import com.xiaohua.star.model.vo.KnowledgeBaseVO;
 import com.xiaohua.star.model.vo.KnowledgeCategoryVO;
+import com.xiaohua.star.model.vo.KnowledgeChunkVO;
 import com.xiaohua.star.model.vo.KnowledgeDocumentVO;
 import com.xiaohua.star.model.vo.KnowledgeSearchResultVO;
 import com.xiaohua.star.service.KbIndexService;
@@ -209,6 +211,15 @@ public class KnowledgeController {
     @Operation(summary = "重新索引单个文档（异步）")
     public BaseResponse<Boolean> reindexDocument(@PathVariable Long id, HttpServletRequest httpRequest) {
         return ResultUtils.success(knowledgeDocumentService.reindex(id, requireUserId(httpRequest)));
+    }
+
+    @GetMapping("/doc/{id}/chunks")
+    @Operation(summary = "查看文档切片（分页，按 chunkIndex 升序）")
+    public BaseResponse<IPage<KnowledgeChunkVO>> listDocumentChunks(@PathVariable Long id,
+                                                                   PageRequest request,
+                                                                   HttpServletRequest httpRequest) {
+        return ResultUtils.success(knowledgeDocumentService.listChunks(
+                id, request.getCurrent(), request.getPageSize(), requireUserId(httpRequest)));
     }
 
     /**

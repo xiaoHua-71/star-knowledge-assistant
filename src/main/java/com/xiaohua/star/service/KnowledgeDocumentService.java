@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.xiaohua.star.model.dto.knowledge.KnowledgeDocumentQueryRequest;
 import com.xiaohua.star.model.entity.KnowledgeDocument;
+import com.xiaohua.star.model.vo.KnowledgeChunkVO;
 import com.xiaohua.star.model.vo.KnowledgeDocumentVO;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -32,6 +33,13 @@ public interface KnowledgeDocumentService extends IService<KnowledgeDocument> {
      * 重新索引单个文档（异步），用于失败重试
      */
     boolean reindex(Long docId, Long userId);
+
+    /**
+     * 分页查看某文档的切片（按 chunkIndex 升序）。
+     *
+     * <p>用途：让用户看到「文档被切成了什么」——既建立信任，也能帮用户理解为什么某些问题查不到。
+     */
+    IPage<KnowledgeChunkVO> listChunks(Long docId, int current, int pageSize, Long userId);
 
     KnowledgeDocument getOwnedOrThrow(Long docId, Long userId);
 
