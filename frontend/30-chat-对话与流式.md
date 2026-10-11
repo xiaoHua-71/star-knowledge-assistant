@@ -1,6 +1,6 @@
 # chat · 对话与流式
 
-> ⬜ **状态：设计已定稿，接口尚未实现。**
+> ⚠️ **状态：`POST /chat/message`（非流式，简化路径）已在 M4 实现；`POST /chat/stream`（流式）尚未实现（M6）。**
 
 ## 这个模块只有一个核心接口
 
@@ -53,6 +53,54 @@ data: {"runId":"100","conversationId":"7","messageId":"55"}
 
 **⚠️ 最后一条 `50001` 需要前端配合**：用户在回答生成中又点了一次发送时，不要静默失败。建议的做法是**在回答生成中禁用发送按钮**，或者提示「当前回答还没结束，请先停止」。
 
+### 发消息并一次性接收回答（非流式）
+
+```
+POST /api/chat/message
+Content-Type: application/json
+```
+
+> ⚠️ 这是**简化路径**，不是主要交互方式。它**无检索**（不会去知识库找资料）、**无 run**（不创建运行记录，因此没有中断 / 重连 / 事件流）。主要交互请用上面的 `/chat/stream`。它存在的意义是：在流式（M6）落地前，让「一问一答落库」这条主链路端到端可验证，也方便脚本 / 冒烟测试。
+
+#### 请求体
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `conversationId` | string | 是 | 会话 id |
+| `content` | string | 是 | 用户消息，1~4000 字符（**按字符数算**） |
+| `kbIds` | string[] | 否 | **当前版本忽略**（无检索）。保留该字段是为了与 `/chat/stream` 形状一致 |
+
+#### 响应
+
+成功时 HTTP 200，`data` 是**落库后的助手消息**（`MessageVO`，结构见 [20-conversation](20-conversation-会话与消息.md)）：
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "id": "56", "seq": 2, "role": "ASSISTANT", "content": "根据《员工手册》…",
+    "toolCalls": null, "interrupted": false, "tokenCount": 486,
+    "createTime": "2026-10-11T10:00:08"
+  }
+}
+```
+
+#### 可能的失败
+
+| `code` | 场景 |
+|---|---|
+| `40000` | `content` 为空 / 超 4000 字符 / `conversationId` 缺失 |
+| `40100` | 未登录 |
+| `40101` | 这个会话不属于当前用户 |
+| `40400` | 会话不存在（已被删） |
+| `50001` | 对话模型未配置（缺 `DEEPSEEK_API_KEY`），或模型调用失败 |
+
+#### 业务行为
+
+- **用户消息立刻落库**，助手消息在模型返回后落库。两条都进 `conversation_message`，可用 `GET /conversation/{id}/messages` 取回。
+- 模型调用失败时，**用户消息已落库、助手消息不落库**——补救用「截断重发」。
+
 ## 业务行为
 
 ### 一次请求会创建一条用户消息
@@ -84,6 +132,7 @@ data: {"runId":"100","conversationId":"7","messageId":"55"}
 1. （可选）POST /api/conversation/create      新建会话，拿 conversationId
 2. POST /api/chat/stream                      发消息 + 收流式回答
       └─ 期间可能收到 interrupt 事件 → 见 40-agent
+   （简化路径：POST /api/chat/message          非流式，一次性返回，无检索 / 无 run）
 3. GET  /api/conversation/{id}/messages       拉历史消息（重新进页面时）
    GET  /api/agent/run/{runId}/stream         断线后重连（见 02-SSE）
 ```
@@ -112,6 +161,6 @@ data: {"runId":"100","conversationId":"7","messageId":"55"}
 ## 待定项
 
 - 是否推送**检索引用来源**事件（让前端能展示「本回答参考了这两篇文档」）
-- 是否支持**非流式**接口（`POST /chat/message` 一次性返回）。目前不做——流式是主要交互方式，多一个接口就多一套要维护的错误处理
+- **非流式**接口（`POST /chat/message`）**已在 M4 实现为简化路径**（无检索、无 run，见上面的「发消息并一次性接收回答」）。它比流式少一大块错误处理，定位是脚本 / 冒烟测试的轻量入口——**主要交互仍是流式**
 - 用户消息发送后**能否撤回**（目前只能靠「截断重发」实现类似效果）
 - 单用户**并发会话数**限制（目前没有）

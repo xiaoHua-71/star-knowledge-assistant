@@ -1,6 +1,6 @@
 # conversation · 会话与消息
 
-> ⬜ **状态：设计已定稿，接口尚未实现。** 字段名在实现时可能微调，改动会同步到本文档。
+> ✅ **状态：已在 M4 实现**（`POST /chat/message` 非流式对话见 [30-chat](30-chat-对话与流式.md)）。字段名以本文档为准。
 
 会话（`conversation`）是用户可见的「一次对话」。一个会话里有很多条消息（`conversation_message`）。
 
@@ -207,6 +207,8 @@ await api.post('/api/chat/stream', { conversationId, content: newContent });
 ```
 
 **运行中的会话不能截断**：如果当前有 `RUNNING` 状态的运行，返回 `50001`，`message` 为「当前有正在进行的回答，请先停止」。前端要先调停止接口（见 [40-agent](40-agent-中断与恢复.md)）。
+
+> ⚠️ **该拦截暂未生效**：`agent_run` 表到 M8 才建，M4 的实现里还没有「运行中」这个概念，所以现在截断不会因为「运行中」被拒。到 M8 补上校验。
 
 ## 待定项
 
