@@ -87,10 +87,10 @@ GET /api/conversation/list?current=1&pageSize=20
         "createTime": "2026-09-21T09:00:00"
       }
     ],
-    "total": 12,
-    "current": 1,
-    "pageSize": 20,
-    "pages": 1
+    "total": "12",
+    "size": "20",
+    "current": "1",
+    "pages": "1"
   }
 }
 ```
@@ -169,10 +169,10 @@ GET /api/conversation/{id}/messages?current=1&pageSize=50
         "toolCalls": ["searchKnowledge"], "interrupted": false, "tokenCount": 486,
         "createTime": "2026-09-21T10:00:08" }
     ],
-    "total": 6,
-    "current": 1,
-    "pageSize": 50,
-    "pages": 1
+    "total": "6",
+    "size": "50",
+    "current": "1",
+    "pages": "1"
   }
 }
 ```
