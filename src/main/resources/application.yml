@@ -103,6 +103,22 @@ ai:
     model-path: ./models/bge-reranker/model-int8.onnx
     tokenizer-path: ./models/bge-reranker/tokenizer.json
 
+  # 对话模型：DeepSeek-V4.1-Flash（远端，DeepSeek 官方 API，OpenAI 兼容协议），
+  # 依赖 langchain4j-open-ai（见 pom.xml）。
+  # api-key 走系统环境变量、不写进版本库：  export DEEPSEEK_API_KEY=sk-xxxx
+  # 没配 key 时 ChatModelConfig 不装配对话模型 Bean——应用照常启动，只是没有对话能力。
+  chat:
+    base-url: https://api.deepseek.com
+    # 读系统环境变量 DEEPSEEK_API_KEY（DeepSeek 官方平台的 key）
+    api-key: ${DEEPSEEK_API_KEY:}
+    # DeepSeek 官方 model ID（不是百炼的 deepseek-v4.1-flash——ID 由服务提供方定义）
+    model-name: deepseek-flash
+    # 采样温度（未标定）：RAG 问答宜低温，0.3 是起点不是结论
+    temperature: 0.3
+    timeout: 60s
+    log-requests: false
+    log-responses: false
+
 # 知识库原始文件落盘目录（knowledge_document.filePath）
 knowledge:
   storage-dir: ./uploads

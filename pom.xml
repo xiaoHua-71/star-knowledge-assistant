@@ -171,11 +171,27 @@
         </dependency>
 
         <!--
-          暂【不】引 langchain4j-community-dashscope-spring-boot-starter（远端 qwen 对话模型）：
-          它是 Spring 自动配置，要求 langchain4j.community.dashscope.chat-model.api-key；
-          在没有 DASHSCOPE_API_KEY 的环境里会让整个应用启动失败。
-          等做「对话与流式」那个里程碑时再引，并同步补配置。
+          对话模型：DeepSeek-V4.1-Flash（DeepSeek 官方 API，OpenAI 兼容协议），用官方 langchain4j-open-ai 模块。
+
+          为什么不用 langchain4j-community-dashscope-spring-boot-starter：
+            那是个 Spring 自动配置，要求 langchain4j.community.dashscope.chat-model.api-key，
+            缺 key 的环境里会让整个应用启动失败（本文件曾因此把它押后）。
+            langchain4j-open-ai 是普通适配器，由 ChatModelConfig 自己 @Bean，
+            没配 key 时靠条件装配跳过、不拖垮启动。DeepSeek 官方同样是 OpenAI 兼容协议，
+            将来换厂商/换端点只改 baseUrl + modelName。api-key 从系统环境变量 DEEPSEEK_API_KEY 读。
+
+          ⚠️ 依赖坐标是 langchain4j-open-ai（带连字符），且版本走【稳定线】${langchain4j.version}，
+             不在 beta 线——别按其他集成那样写 langchain4j.beta.version，beta 线上根本没发这个包
+             （实测 1.20.0-beta30 拉不到，会得到只有 .lastUpdated 的失败缓存）。
+
+          模型 ID 用 DeepSeek 官方的 deepseek-flash（≠ 百炼的 deepseek-v4.1-flash，ID 由服务方定义）。
+             换 provider 时 baseUrl + modelName 必须一起改，否则会认证失败或模型不存在。见 ChatModelProperties。
         -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
     </dependencies>
 
     <dependencyManagement>

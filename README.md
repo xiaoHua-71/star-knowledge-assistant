@@ -36,7 +36,7 @@
 | 向量库 | Milvus 2.5.27（本地 `docker-compose.yml` 起，见仓库根目录） |
 | 前端 | 待定（候选：Vue 3 + Vite + Element Plus） |
 | AI 框架 | LangChain4j `1.20.0`（集成模块 `1.20.0-beta30`） |
-| 对话模型 | DashScope qwen（**远端**） |
+| 对话模型 | DeepSeek-V4.1-Flash（**远端**，DeepSeek 官方直连，OpenAI 兼容，模型 ID `deepseek-flash`） |
 | 向量 / 重排模型 | **本地 ONNX**：bge-small-zh-v15（512 维）/ bge-reranker |
 
 **⚠️ `onnxruntime` 被显式钉在 `1.20.0`。** LC4j 的 `embeddings` 与 `onnx-scoring` 声明的版本不一致，

@@ -18,7 +18,7 @@ import java.nio.file.Path;
 /**
  * AI 模型装配（向量模型 + 重排模型）
  *
- * <p>对话模型不在这里——它在这两个之外单独接（见 knowledge/01）。
+ * <p>对话模型不在这里——它在这两个之外单独接（见 {@link ChatModelConfig} 与 knowledge/01）。
  *
  * <p><b>向量模型（embedding）</b>：本地 ONNX，模型文件打进 jar，零下载零调用成本。
  * 它是单例、线程安全，全进程复用一个即可（{@code AbstractInProcessEmbeddingModel}

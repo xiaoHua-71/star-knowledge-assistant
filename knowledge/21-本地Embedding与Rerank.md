@@ -124,7 +124,7 @@ query → 【embedding】→ 召回 N 条 → 【rerank】→ 取 Top-K → 拼�
 
 ### 对话模型保持远端
 
-不在本篇范围内，见 [01-总体架构与路线图](01-总体架构与路线图.md)。已确认配置前缀没变（仍是 `langchain4j.community.dashscope.chat-model`），salary-leap 的 yml 可以照抄。
+不在本篇范围内，见 [01-总体架构与路线图](01-总体架构与路线图.md)。**对话模型改用 DeepSeek 官方直连的 DeepSeek-V4.1-Flash（用 `langchain4j-open-ai` 走 OpenAI 兼容协议）**，不再依赖 `langchain4j-community-dashscope-spring-boot-starter` 及其 `langchain4j.community.dashscope.chat-model` 配置前缀。
 
 ---
 
