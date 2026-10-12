@@ -162,14 +162,36 @@ Content-Type: application/json
 
 `POST /api/chat/stream` 已实现**最小可用版**（`service/ChatStreamService` + `impl/ChatStreamServiceImpl`，`ChatController#stream`），前端一字未改即可逐字收答案。
 
-**已实现的事件**：`run_start`（`runId` = 占位 UUID；`messageId` = 用户消息 id）→ N× `message_delta`（只带 `delta`，省略 `messageId`）→ `run_end`（`messageId` = 助手消息 id，`status=COMPLETED`）；模型失败时推 `error`。
+### 已实现的事件（可直接联调）
 
-**取巧点 / 边界**：
-- `runId` 是占位 UUID —— 没有 `agent_run` 表（M8）。
-- 事件 `id` 是**内存自增**，不落库、不可续传；`message_snapshot`（重连才用）/ `ping` 心跳未实现。
+| 事件 | 状态 | `data` 字段 | 与 [02-SSE协议规范](02-SSE协议规范.md) 事件类型表的差异 |
+|---|---|---|---|
+| `run_start` | ✅ | `{runId, conversationId, messageId}` | `runId` 是**占位 UUID**（无 `agent_run` 表）；`messageId` = 用户消息 id |
+| `message_delta` | ✅ | `{delta}` | **只有 `delta`，没有 `messageId`**（规范里是 `{messageId, delta}`） |
+| `run_end` | ✅ | `{runId, status:"COMPLETED", messageId}` | **没有 `usage` / `elapsedMs`**；`messageId` = 助手消息 id |
+| `error` | ✅ | `{code, message, runId, retryable}` | 一致（模型调用失败时推） |
+| `todo_update` / `tool_call` / `tool_result` | ❌ 未实现 | — | 无 Agent、无工具 |
+| `message_snapshot` | ❌ 未实现 | — | 无持久化事件，不可续传 |
+| `interrupt` | ❌ 未实现 | — | 也无 `interrupt` / `resume` / `approve` 接口 |
+| `ping` | ❌ 未实现 | — | 无心跳保活 |
+
+### 前端当前「可以做」与「别做」
+
+**可以做**：发消息 → 逐字**追加**显示 → 收到 `run_end` 收尾（清「生成中」、刷新会话列表）→ 拉历史消息。这条主链路端到端可联调。
+
+**别实现（依赖的事件 / 接口未落地，属 M8）**：
+- **停止 / 继续 / 人工确认**：无 `interrupt` 事件，也没有 `POST /agent/run/{runId}/interrupt|resume|approve`。
+- **断线重连**：事件 `id` 是内存自增、不落库、不可续传，`GET /agent/run/{runId}/stream` 不存在。断线只能**重新拉历史消息**恢复界面。
+- **基于 `ping` 的心跳 / 连接存活判断**：无 `ping`。
+- **50001 并发护栏**：后端**没有**校验「该会话已有正在进行的运行」，同一会话连点两次发送不会拦——前端需自己在「生成中」**禁用发送按钮**。
+- **引用来源展示**：无检索、无 `references` 事件。
+
+### 其它取巧点 / 边界
+
 - 复用现有两段短事务（`ConversationMessageService#appendMessage`）与 `MemoryBuilder.build()` 的 `List<ChatMessage>`，直接喂已装配的 `streamingChatModel` Bean。
 - 建流前失败（40100 / 40000 / 40400 / 50001）必须回 **JSON 信封**而不是 event-stream —— 后端有个 406 陷阱，见 [02-SSE协议规范](02-SSE协议规范.md) 坑 2 的「后端实现注意」。
 - 无检索（`kbIds` 忽略）、无中断 / 重连 / 续跑。
+- **前置条件**：环境变量 `DEEPSEEK_API_KEY` 必须设，否则 `streamingChatModel` Bean 不装配（`ChatModelConfig`），建流直接回 50001（模型未配置）。
 
 ## 待定项
 
