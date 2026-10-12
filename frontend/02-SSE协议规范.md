@@ -1,6 +1,6 @@
 # SSE 协议规范（流式对话）
 
-> ⬜ **状态：协议已定稿，接口尚未实现。** 前端可以照此设计界面和状态机，联调前建议再确认一次。
+> 🟡 **状态：协议已定稿；M6「最小版」已实现其中 `run_start` / `message_delta` / `run_end` / `error` 四个事件（2026-10-12，见 [30-chat](30-chat-对话与流式.md) 落地记录）。重连补发、`interrupt`、`agent_event` 持久化等仍未实现（属 M8）。**
 
 ## 一、为什么是 SSE，不是 WebSocket
 
@@ -76,6 +76,14 @@ const reader = res.body.getReader();
 ```
 
 **没有这个判断的后果**：`reader.read()` 会拿到一段 JSON 文本，你的 SSE 解析器解析不出任何事件，表现为「连接建立了但什么都没发生」——非常难排查。
+
+#### 后端实现注意（M6 落地时踩到的 406 陷阱）
+
+这个「建流失败回 JSON」的要求在后端有个**隐蔽陷阱**：控制器方法声明返回 `SseEmitter` 时，如果建流前的校验失败、异常经全局 `@RestControllerAdvice` 返回普通 JSON 信封，会走 **Accept 内容协商**——而前端带的是 `Accept: text/event-stream`，`BaseResponse` 产出不了这个类型 → **HTTP 406，响应体不是信封**（前端拿到的是空/错误页，`response.json()` 解析失败）。
+
+修法：在该控制器加**控制器局部** `@ExceptionHandler`，返回 `ResponseEntity.status(200).contentType(MediaType.APPLICATION_JSON).body(...)`。依据 Spring 的 `AbstractMessageConverterMethodProcessor#writeWithMessageConverters`：响应 `Content-Type` 已是具体值时**跳过** Accept 协商，故不会 406。
+
+⚠️ **验证这个路径时必须显式带 `Accept: text/event-stream`**——`curl` 默认 `Accept: */*` 会协商出 JSON，把 406 掩盖掉，得到**假阳性**。
 
 ### 坑 3：流**内部**的数据不走 `BaseResponse` 信封
 

@@ -1,6 +1,6 @@
 # chat · 对话与流式
 
-> ⚠️ **状态：`POST /chat/message`（非流式，简化路径）已在 M4 实现；`POST /chat/stream`（流式）尚未实现（M6）。**
+> ✅ **状态：`POST /chat/message`（非流式）M4 已实现；`POST /chat/stream`（流式）M6「最小版」已实现（2026-10-12，见文末「落地记录」）。断线回放 / 中断 / run 持久化仍未实现（属 M8）。**
 
 ## 这个模块只有一个核心接口
 
@@ -157,6 +157,19 @@ Content-Type: application/json
 ```
 
 重连时**必须带上最后收到的事件 id**（`lastEventId`），否则会收到重复的事件。
+
+## 落地记录（M6 最小版，2026-10-12）
+
+`POST /api/chat/stream` 已实现**最小可用版**（`service/ChatStreamService` + `impl/ChatStreamServiceImpl`，`ChatController#stream`），前端一字未改即可逐字收答案。
+
+**已实现的事件**：`run_start`（`runId` = 占位 UUID；`messageId` = 用户消息 id）→ N× `message_delta`（只带 `delta`，省略 `messageId`）→ `run_end`（`messageId` = 助手消息 id，`status=COMPLETED`）；模型失败时推 `error`。
+
+**取巧点 / 边界**：
+- `runId` 是占位 UUID —— 没有 `agent_run` 表（M8）。
+- 事件 `id` 是**内存自增**，不落库、不可续传；`message_snapshot`（重连才用）/ `ping` 心跳未实现。
+- 复用现有两段短事务（`ConversationMessageService#appendMessage`）与 `MemoryBuilder.build()` 的 `List<ChatMessage>`，直接喂已装配的 `streamingChatModel` Bean。
+- 建流前失败（40100 / 40000 / 40400 / 50001）必须回 **JSON 信封**而不是 event-stream —— 后端有个 406 陷阱，见 [02-SSE协议规范](02-SSE协议规范.md) 坑 2 的「后端实现注意」。
+- 无检索（`kbIds` 忽略）、无中断 / 重连 / 续跑。
 
 ## 待定项
 
