@@ -22,6 +22,44 @@
             └─ 切片（knowledge_chunk）← 检索的最小单位，前端一般不直接接触
 ```
 
+## 接口总览
+
+所有路径都要加 `/api` 前缀（见 [01-通用约定](01-通用约定.md)）。**全部需要登录**，未登录返回 `40100`，操作他人资源返回 `40101` / `40400`。
+
+**知识库**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/kb/create` | 创建知识库 |
+| GET | `/kb/list` | 知识库列表（分页） |
+| GET | `/kb/{id}` | 知识库详情 |
+| POST | `/kb/update` | 修改（改切片参数 → 响应带 `rebuildRequired`） |
+| POST | `/kb/delete` | 删除（**不可恢复**，连带文档/切片/向量集合） |
+| POST | `/kb/{id}/rebuild?full=` | 重建索引（**异步**，立刻返回） |
+| GET | `/kb/{id}/status` | 构建进度（**前端轮询**） |
+| POST | `/kb/{id}/search` | 检索测试 |
+
+**分类**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/kb/category/create` | 创建分类 |
+| GET | `/kb/category/tree` | 分类树（一次返回完整树） |
+| POST | `/kb/category/update` | 修改分类 |
+| POST | `/kb/category/delete` | 删除分类（子分类级联删，库变未分类） |
+
+**文档**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/kb/{kbId}/doc/upload` | 上传文件（**异步**，返回 `status=PENDING`） |
+| POST | `/kb/{kbId}/doc/url` | 添加网页 |
+| GET | `/kb/{kbId}/doc/list` | 文档列表（分页，可按 `status` / `keyword` 筛选） |
+| POST | `/kb/doc/update` | 文档重命名 |
+| POST | `/kb/doc/delete` | 删除文档（连带切片与向量，**不可恢复**） |
+| POST | `/kb/doc/{id}/reindex` | 重新索引单个文档（**异步**） |
+| GET | `/kb/doc/{id}/chunks` | 查看文档切片（分页，按 `chunkIndex` 升序） |
+
 ## 数据结构
 
 ### `KnowledgeBaseVO`
@@ -38,6 +76,7 @@ interface KnowledgeBaseVO {
   chunkSize: number;            // 切片长度参数（字符）
   chunkOverlap: number;         // 切片重叠参数
   createTime: string;
+  rebuildRequired: boolean | null;  // 仅「修改知识库」响应里为 true：切片参数变了需重建；其余为 null
 }
 ```
 
@@ -494,6 +533,61 @@ GET /api/kb/doc/{docId}/chunks?current=1&pageSize=20
 - `tokenCount` **目前恒为 `null`**（真实 tokenizer 尚未接入，见 [knowledge/22](../knowledge/22-知识库与文档生命周期.md) 坑 4）；`charCount` 是准的。
 - 文档**还没索引完**（状态不是 `INDEXED`）或**索引失败**时，`records` 是**空数组**，这是正常情况，不是错误。
 - 只能查看**自己**文档的切片（他人文档返回 `40400` 不存在）。
+
+## 前端类型定义（可直接复制）
+
+> **响应体的 VO 类型（`KnowledgeBaseVO` / `KnowledgeCategoryVO` / `KnowledgeDocumentVO` / `KnowledgeSearchResultVO` / `KbBuildStatusVO`）见上方「数据结构」一节。** 这里只列**请求体**类型。所有 id 一律 `string`。
+
+```ts
+export interface KnowledgeBaseCreateRequest {
+  name: string;              // 1~80 字符
+  description?: string;      // ≤512 字符
+  categoryId?: string;
+}
+
+export interface KnowledgeBaseUpdateRequest {
+  id: string;
+  name?: string;
+  description?: string;
+  categoryId?: string;
+  chunkSize?: number;        // 100~1000；改了必须重建
+  chunkOverlap?: number;     // 0~300，必须 < chunkSize；改了必须重建
+}
+
+export interface KnowledgeCategoryCreateRequest {
+  name: string;              // 1~80 字符，同一父级下不能重名
+  parentId?: string;         // 不传或 "0" = 根分类
+}
+
+export interface KnowledgeCategoryUpdateRequest {
+  id: string;
+  name?: string;
+  parentId?: string;
+  sortOrder?: number;
+}
+
+export interface KnowledgeSearchRequest {
+  query: string;
+  topK?: number;             // 默认 5，最大 20
+}
+
+export interface KnowledgeDocumentUrlRequest {
+  url: string;               // http/https
+}
+
+export interface KnowledgeDocumentRenameRequest {
+  id: string;
+  name: string;
+}
+
+// 通用删除（/kb/delete、/kb/category/delete、/kb/doc/delete 共用）
+export interface DeleteRequest {
+  id: string;
+}
+
+// 上传是 multipart/form-data，不是 JSON：字段名 file（File）
+// 其余列表查询都继承分页参数：{ current?, pageSize?, sortField?, sortOrder? }
+```
 
 ## 待定项
 

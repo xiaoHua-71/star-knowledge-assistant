@@ -6,6 +6,20 @@
 
 **「会话」和「一次运行」的区别**（容易混）：用户每次发一条消息，都会触发一次 **运行**（run）。所以一个会话里有多次运行。**「中断对话」实际上是中断当前这次运行，会话本身不受影响。** 运行相关的接口在 [40-agent-中断与恢复](40-agent-中断与恢复.md)。
 
+## 接口总览
+
+所有路径都要加 `/api` 前缀（见 [01-通用约定](01-通用约定.md)）。**全部需要登录**，未登录返回 `40100`，操作他人会话返回 `40101`。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/conversation/create` | 创建会话（可同时关联知识库 `kbIds`） |
+| GET | `/conversation/list` | 会话列表（分页，置顶在前） |
+| GET | `/conversation/{id}` | 会话详情（**不含消息**） |
+| POST | `/conversation/update` | 重命名 / 置顶 |
+| POST | `/conversation/delete` | **删除会话**（逻辑删） |
+| GET | `/conversation/{id}/messages` | 拉取消息历史（分页） |
+| POST | `/conversation/message/delete` | 删除消息（**截断重发**，不是删单条） |
+
 ## 数据结构
 
 ### `ConversationVO`
@@ -55,6 +69,8 @@ POST /api/conversation/create
 | `kbIds` | string[] | 否 | 关联的知识库，不传表示不用 RAG |
 
 响应：`data` 是 `ConversationVO`
+
+**⚠️ `kbIds` 只能在创建时设定。** 会话建好后**没有**「修改关联知识库」的接口——`POST /conversation/update` 只支持改标题和置顶。若某次要临时用别的库，靠发消息时在请求里带 `kbIds` 覆盖（见 [30-chat](30-chat-对话与流式.md)），那只影响**单次请求**，不改会话的长期关联。
 
 **使用建议**：用户在输入框里打完字点发送时，如果当前没有会话，可以先调这个接口拿 `id`，再调 `POST /chat/stream`。**不要把创建会话和发消息合成一个接口**——那样「新建会话但一句话都没发」的场景就没法表达了。
 
@@ -209,6 +225,53 @@ await api.post('/api/chat/stream', { conversationId, content: newContent });
 **运行中的会话不能截断**：如果当前有 `RUNNING` 状态的运行，返回 `50001`，`message` 为「当前有正在进行的回答，请先停止」。前端要先调停止接口（见 [40-agent](40-agent-中断与恢复.md)）。
 
 > ⚠️ **该拦截暂未生效**：`agent_run` 表到 M8 才建，M4 的实现里还没有「运行中」这个概念，所以现在截断不会因为「运行中」被拒。到 M8 补上校验。
+
+## 前端类型定义（可直接复制）
+
+> **所有 id 一律 `string`**（后端 `Long` 全局序列化成字符串，见 [01-通用约定](01-通用约定.md) 陷阱 1）；`seq`、`messageCount`、`tokenCount` 是 `number`。
+
+```ts
+export interface ConversationVO {
+  id: string;
+  title: string;                    // 默认「新会话」
+  pinned: boolean;
+  messageCount: number;
+  kbIds: string[];                  // 关联知识库 id，空数组 = 不用 RAG
+  lastMessageTime: string | null;   // 列表排序用
+  createTime: string;
+}
+
+export interface MessageVO {
+  id: string;
+  seq: number;                      // ★ 排序用这个，不要用 createTime
+  role: 'USER' | 'ASSISTANT';
+  content: string;
+  toolCalls: string[] | null;       // 仅供展示的工具名
+  interrupted: boolean;
+  tokenCount: number | null;
+  createTime: string;
+}
+
+export interface ConversationCreateRequest {
+  title?: string;
+  kbIds?: string[];
+}
+
+export interface ConversationUpdateRequest {
+  id: string;
+  title?: string;                   // 1~255 字符
+  pinned?: boolean;
+}
+
+export interface ConversationDeleteRequest {
+  id: string;
+}
+
+export interface MessageTruncateRequest {
+  conversationId: string;
+  fromSeq: number;                  // 删 seq >= fromSeq 的全部消息
+}
+```
 
 ## 待定项
 

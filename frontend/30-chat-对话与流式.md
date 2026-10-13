@@ -8,6 +8,17 @@
 
 **协议细节（事件类型、重连、解析代码）全部在 [02-SSE协议规范](02-SSE协议规范.md) 里，本文不重复。** 这里只讲接口本身的入参出参和业务行为。
 
+## 接口总览
+
+所有路径都要加 `/api` 前缀（见 [01-通用约定](01-通用约定.md)）。**两个接口都需要登录**，未登录返回 `40100`。
+
+| 方法 | 路径 | 说明 | 响应 `Content-Type` |
+|---|---|---|---|
+| POST | `/chat/stream` | 发消息 + **流式**接收回答（★ 主交互） | 成功 `text/event-stream`；建流失败 `application/json`（普通信封） |
+| POST | `/chat/message` | 发消息 + **一次性**接收回答（简化路径，非流式、无检索） | `application/json` |
+
+> ⚠️ `/chat/stream` 的「建流失败回 JSON 信封」是整个对接最容易翻车的地方——**必须先看 `Content-Type` 再决定怎么解析**。见 [02-SSE协议规范](02-SSE协议规范.md) 坑 2。
+
 ## 接口
 
 ### 发消息并接收流式回答
@@ -203,6 +214,44 @@ Content-Type: application/json
 - 建流前失败（40100 / 40000 / 40400 / 50001）必须回 **JSON 信封**而不是 event-stream —— 后端有个 406 陷阱，见 [02-SSE协议规范](02-SSE协议规范.md) 坑 2 的「后端实现注意」。
 - **已接入自动检索**（`kbIds` 语义生效，见 §检索是自动的）；仍无中断 / 重连 / 续跑。
 - **前置条件**：环境变量 `DEEPSEEK_API_KEY` 必须设，否则 `streamingChatModel` Bean 不装配（`ChatModelConfig`），建流直接回 50001（模型未配置）。
+
+## 前端类型定义（可直接复制）
+
+```ts
+// 请求体：/chat/stream 与 /chat/message 形状一致
+export interface ChatRequest {
+  conversationId: string;   // 会话 id
+  content: string;          // 用户消息，1~4000 字符
+  kbIds?: string[];         // 本次检索用哪些库；不传用会话关联；[] 表示本次不用 RAG
+                            // ⚠️ /chat/message 目前忽略该字段（无检索）
+}
+
+// /chat/message 的响应 data 是落库后的助手消息 → 类型见 MessageVO
+// （在 [20-conversation](20-conversation-会话与消息.md)）
+
+// ---- /chat/stream 已实现的事件 payload（完整协议见 [02-SSE协议规范](02-SSE协议规范.md)）----
+export interface RunStartPayload {
+  runId: string;            // ⚠️ 占位 UUID（无 agent_run 表）
+  conversationId: string;
+  messageId: string;        // = 用户消息 id
+}
+export interface MessageDeltaPayload {
+  delta: string;            // ⚠️ 只有 delta，没有 messageId（与 02 的规范略有出入）
+}
+export interface RunEndPayload {
+  runId: string;
+  status: 'COMPLETED';      // ⚠️ 无 usage / elapsedMs
+  messageId: string;        // = 助手消息 id
+}
+export interface ErrorPayload {
+  code: number;
+  message: string;
+  runId: string;
+  retryable: boolean;
+}
+```
+
+> `todo_update` / `tool_call` / `tool_result` / `message_snapshot` / `interrupt` / `ping` 属 M8，前端**暂不实现**（见上方「已实现的事件」表）。事件类型在 [02-SSE协议规范](02-SSE协议规范.md) 第五节有完整定义。
 
 ## 待定项
 
