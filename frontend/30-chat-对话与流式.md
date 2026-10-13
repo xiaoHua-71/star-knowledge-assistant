@@ -1,6 +1,6 @@
 # chat · 对话与流式
 
-> ✅ **状态：`POST /chat/message`（非流式）M4 已实现；`POST /chat/stream`（流式）M6「最小版」已实现（2026-10-12，见文末「落地记录」）。断线回放 / 中断 / run 持久化仍未实现（属 M8）。**
+> ✅ **状态：`POST /chat/message`（非流式）M4 已实现；`POST /chat/stream`（流式）M6「最小版」+ 自动检索已实现（2026-10-12 / 2026-10-13，见文末「落地记录」）。断线回放 / 中断 / run 持久化仍未实现（属 M8）。**
 
 ## 这个模块只有一个核心接口
 
@@ -116,9 +116,13 @@ Content-Type: application/json
 - 运行中**不能**通过消息列表接口看到正在生成的回答（要等结束，或者用重连机制拿 `message_snapshot`）
 - 运行被中断时，半截的回答**不作为消息保存**（否则用户继续之后会看到两条回复）
 
-### 检索是自动的
+### 检索是自动的 ✅（2026-10-13 落地）
 
-如果会话关联了知识库，后端会在调模型之前自动检索，并把检索到的片段拼进 prompt。**这些过程前端看不到**（不推事件）——用户只看到答案。
+如果本次（或会话）关联了知识库，后端会在调模型之前自动检索，并把命中的片段拼进 prompt。**这些过程前端看不到**（不推事件）——用户只看到答案。
+
+- 用哪些库由 `kbIds` 决定：请求带了就用请求的（临时覆盖，不改会话关联），没带就用会话关联的，传 `[]` 表示本次不用 RAG。
+- 关联多个库时，后端**逐库检索再合并**（交错取，不是把分数混在一起全局排序）。
+- 检索失败（库被删 / 越权 / 向量模型不匹配）**不会让请求失败**——退化为「不带资料正常回答」，用户无感。
 
 **为什么不做成可见的**：检索是「怎么找到答案」的过程，不是用户关心的内容。用户关心的是答案本身和它引用了什么。
 
@@ -158,9 +162,16 @@ Content-Type: application/json
 
 重连时**必须带上最后收到的事件 id**（`lastEventId`），否则会收到重复的事件。
 
-## 落地记录（M6 最小版，2026-10-12）
+## 落地记录（M6 最小版，2026-10-12；自动检索，2026-10-13）
 
 `POST /api/chat/stream` 已实现**最小可用版**（`service/ChatStreamService` + `impl/ChatStreamServiceImpl`，`ChatController#stream`），前端一字未改即可逐字收答案。
+
+### 自动检索（2026-10-13）
+
+`ChatStreamServiceImpl` 在建 prompt 前按 `kbIds` 自动检索，命中片段并入同一条 system 消息（`MemoryBuilder.build(convId, systemPrompt, retrievedContext)`）。多库逐库检索后**交错合并**（`ai/RetrievalContextBuilder`），非按分数全局排序；检索失败逐库吞掉、整体退化为无 RAG。**不推任何事件**，前端无感。
+
+- 关键实现：`ai/RetrievalContextBuilder`（per-KB topK=3、合并上限 5、单条正文截断 800 字、带防提示注入的免责声明）、`ChatStreamServiceImpl#resolveKbIds`。
+- 边界：`knowledge.search.minScore=0` 时**非空库对任何问题都会返回 topK**，因此**纯闲聊也会注入最多 5 条无关片段**。根治要等评测集标定分数阈值（见 [knowledge/23](../knowledge/23-混合检索与融合.md)），当前靠条数上限 + 免责声明缓解。
 
 ### 已实现的事件（可直接联调）
 
@@ -184,13 +195,13 @@ Content-Type: application/json
 - **断线重连**：事件 `id` 是内存自增、不落库、不可续传，`GET /agent/run/{runId}/stream` 不存在。断线只能**重新拉历史消息**恢复界面。
 - **基于 `ping` 的心跳 / 连接存活判断**：无 `ping`。
 - **50001 并发护栏**：后端**没有**校验「该会话已有正在进行的运行」，同一会话连点两次发送不会拦——前端需自己在「生成中」**禁用发送按钮**。
-- **引用来源展示**：无检索、无 `references` 事件。
+- **引用来源展示**：后端**已自动检索**（见上文 §检索是自动的），但仍无 `references` 事件——检索结果只喂给模型，不推给前端。
 
 ### 其它取巧点 / 边界
 
 - 复用现有两段短事务（`ConversationMessageService#appendMessage`）与 `MemoryBuilder.build()` 的 `List<ChatMessage>`，直接喂已装配的 `streamingChatModel` Bean。
 - 建流前失败（40100 / 40000 / 40400 / 50001）必须回 **JSON 信封**而不是 event-stream —— 后端有个 406 陷阱，见 [02-SSE协议规范](02-SSE协议规范.md) 坑 2 的「后端实现注意」。
-- 无检索（`kbIds` 忽略）、无中断 / 重连 / 续跑。
+- **已接入自动检索**（`kbIds` 语义生效，见 §检索是自动的）；仍无中断 / 重连 / 续跑。
 - **前置条件**：环境变量 `DEEPSEEK_API_KEY` 必须设，否则 `streamingChatModel` Bean 不装配（`ChatModelConfig`），建流直接回 50001（模型未配置）。
 
 ## 待定项

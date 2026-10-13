@@ -1,9 +1,11 @@
 package com.xiaohua.star.service.impl;
 
 import com.xiaohua.star.ai.MemoryBuilder;
+import com.xiaohua.star.ai.RetrievalContextBuilder;
 import com.xiaohua.star.common.ErrorCode;
 import com.xiaohua.star.exception.BusinessException;
 import com.xiaohua.star.model.dto.conversation.ChatMessageRequest;
+import com.xiaohua.star.model.entity.Conversation;
 import com.xiaohua.star.model.entity.ConversationMessage;
 import com.xiaohua.star.service.ChatStreamService;
 import com.xiaohua.star.service.ConversationMessageService;
@@ -20,6 +22,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -27,7 +30,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 流式对话实现（M6 最小可用版：无检索、无 run、无中断/重连）。见 frontend/02、frontend/30。
+ * 流式对话实现（M6 最小可用版 + 自动检索：无 run、无中断/重连）。见 frontend/02、frontend/30。
+ *
+ * <p>已接入<b>自动检索（RAG）</b>：按 {@code kbIds} 取命中片段拼进 prompt（见 {@link RetrievalContextBuilder}），
+ * 检索失败退化为无 RAG。
  *
  * <p>与非流式 {@link ChatServiceImpl} 同构：建流阶段（校验 / 归属 / 取模型 / 事务#1 落用户消息 /
  * 重建 prompt）在调用线程同步完成；模型调用异步非阻塞，逐段回答经回调在 HTTP 客户端线程推
@@ -58,6 +64,9 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     @Resource
     private MemoryBuilder memoryBuilder;
 
+    @Resource
+    private RetrievalContextBuilder retrievalContextBuilder;
+
     @Override
     public SseEmitter stream(ChatMessageRequest request, Long userId) {
         // 1. 参数校验（40000）
@@ -74,7 +83,7 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         }
 
         // 2. 校验会话归属（40400 / 40101）
-        conversationService.getOwnedOrThrow(request.getConversationId(), userId);
+        Conversation conversation = conversationService.getOwnedOrThrow(request.getConversationId(), userId);
 
         // 3. 取流式模型；缺则 50001，且在此之前不写任何数据（避免留下孤立的用户消息）
         StreamingChatModel model = streamingChatModelProvider.getIfAvailable();
@@ -88,9 +97,19 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                 request.getConversationId(), userId,
                 ConversationMessage.ROLE_USER, content, memoryBuilder.estimate(content));
 
-        // 5. 重建 prompt（含系统消息 + 预算内历史，末条即刚落的用户消息）
+        // 4.5 自动检索（RAG）：解析要用哪些库（请求 kbIds 覆盖 / 否则用会话关联 / 空数组不检索），
+        //     取命中片段拼成上下文。任何失败都吞掉退化为无 RAG，绝不让检索拖垮对话。
+        String retrievedContext = null;
+        try {
+            retrievedContext = retrievalContextBuilder.build(
+                    resolveKbIds(request, conversation), content, userId);
+        } catch (Exception e) {
+            log.warn("检索上下文构建失败，按无 RAG 继续: conversationId={}", request.getConversationId(), e);
+        }
+
+        // 5. 重建 prompt（系统消息[+检索资料] + 预算内历史，末条即刚落的用户消息）
         List<ChatMessage> prompt = memoryBuilder.build(
-                request.getConversationId(), ChatServiceImpl.SYSTEM_PROMPT);
+                request.getConversationId(), ChatServiceImpl.SYSTEM_PROMPT, retrievedContext);
 
         // 6. 建 emitter，先发 run_start。此时尚未 initialize，事件会被缓冲并按序回放，不丢。
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
@@ -197,6 +216,32 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         });
 
         return emitter;
+    }
+
+    /**
+     * 解析本次对话要用哪些知识库，按 frontend/30 的 {@code kbIds} 契约：
+     * 请求带了就用请求的（临时覆盖，不改会话长期关联）；没带就用会话关联的；空数组表示本次不用 RAG。
+     * 非数字项跳过（会话串是历史遗留脏数据时的容错）。
+     */
+    static List<Long> resolveKbIds(ChatMessageRequest request, Conversation conversation) {
+        List<String> raw = request.getKbIds() != null
+                ? request.getKbIds()
+                : ConversationServiceImpl.parseKbIds(conversation.getKbIds());
+        if (raw == null || raw.isEmpty()) {
+            return List.of();
+        }
+        List<Long> ids = new ArrayList<>(raw.size());
+        for (String s : raw) {
+            if (s == null || s.isBlank()) {
+                continue;
+            }
+            try {
+                ids.add(Long.valueOf(s.trim()));
+            } catch (NumberFormatException e) {
+                log.warn("忽略非法的 kbId: {}", s);
+            }
+        }
+        return ids;
     }
 
     /**

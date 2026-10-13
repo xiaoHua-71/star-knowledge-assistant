@@ -100,7 +100,7 @@ data:<单行 JSON>
 
 ### 时序
 
-1. **控制器线程**：参数校验 → `ConversationService#getOwnedOrThrow`（会话归属）→ 取 `streamingChatModel`（缺则 50001）→ **事务 #1** 落用户消息 → `MemoryBuilder#build` 重建 prompt。
+1. **控制器线程**：参数校验 → `ConversationService#getOwnedOrThrow`（会话归属）→ 取 `streamingChatModel`（缺则 50001）→ **事务 #1** 落用户消息 → 按 `kbIds` **自动检索**并拼上下文（`RetrievalContextBuilder`，失败退化为无 RAG）→ `MemoryBuilder#build(convId, systemPrompt, 检索块)` 重建 prompt。
 2. 建 `SseEmitter(300_000L)`，`send` `run_start`（此时未 `initialize`，事件被缓冲，返回后按序回放）。
 3. `model.chat(prompt, handler)`（异步，立即返回 emitter）。
 4. 回调线程 `onPartialResponse` → `send` `message_delta`。
@@ -123,7 +123,7 @@ data:<单行 JSON>
 
 - **断线回放 / 重连**（`GET /agent/run/{runId}/stream`）、**中断 / 续跑**、**事件持久化**（`agent_event`）——都属 M8。
 - `message_snapshot`、`ping` 心跳未实现。
-- 检索未接（`kbIds` 被忽略，与非流式一致）。
+- **检索已接入**（2026-10-13，见 [frontend/30](../frontend/30-chat-对话与流式.md) §自动检索；非流式 `chat/message` 仍不检索）。检索在**建 `run_start` 之前**同步发生，会推迟 `run_start`——见下。
 - 事件 `id` 是**进程内自增**，重启即重置、不可续传。前端目前也不做重连，所以无影响。
 
 ### 坑 1：建流失败回 JSON 会撞 406（已踩，已规避）
@@ -142,3 +142,9 @@ data:<单行 JSON>
 ### 坑 3（设计预告，未实现）：delta 不落库 ⇒ 重连靠 snapshot 补偿
 
 逐 token 的 delta **不写** `agent_event`（否则 500 token = 500 行，纯粹冗余；完整文本已在 `conversation_message.content`）。代价是重连**补不出漏掉的 delta**——所以重连流程是：先补 `id > lastEventId` 的里程碑事件 → 再发一条 `message_snapshot`（当前已生成的部分文本）→ 然后继续推 delta。见 [frontend/02](../frontend/02-SSE协议规范.md)、[12-中断与恢复的状态机](12-中断与恢复的状态机.md)。
+
+### 坑 4：检索把首字节推迟了（接入检索的副作用）
+
+- **现象**：接入自动检索后，`run_start` 比以前晚——因为检索（embedding + Milvus + BM25，可能还有 rerank）在**建 `run_start` 之前的同步阶段**完成。
+- **为什么这么排**：检索结果要参与 prompt 重建，而 prompt 必须在 `model.chat(...)` 前备好；把它放在建流之后、调模型之前需要拆开建流时序，当前不值得。
+- **缓解 / 观察点**：`RetrievalContextBuilder` 逐库 catch，单库失败不影响其它库，整体延迟是各库串行之和。**日志记 `elapsedMs`**；实测若超 2s，再考虑并行多库检索或把 `run_start` 提前。

@@ -108,6 +108,39 @@ class MemoryBuilderTest {
         assertEquals(2, MemoryBuilder.estimateTokens("a", 1.5));
     }
 
+    @Test
+    void 无检索上下文时系统消息原样() {
+        assertEquals("SYS", MemoryBuilder.composeSystem("SYS", null));
+        assertEquals("SYS", MemoryBuilder.composeSystem("SYS", "  "));
+    }
+
+    @Test
+    void 检索上下文并入系统消息() {
+        String full = MemoryBuilder.composeSystem("SYS", "资料块");
+
+        assertEquals("SYS\n\n资料块", full);
+        assertInstanceOf(SystemMessage.class,
+                MemoryBuilder.assemble(List.of(), full, 1000, COEF).get(0));
+    }
+
+    @Test
+    void 检索上下文计入预算挤压历史() {
+        // 同一 contextWindow 下，系统消息变长 → 历史预算等量缩水，能装的历史更少
+        List<ConversationMessage> asc = List.of(
+                msg(1, "USER", "aaaaa"),
+                msg(2, "ASSISTANT", "bbbbb"));
+        String base = "SYS";
+        String withCtx = MemoryBuilder.composeSystem(base, "x".repeat(10));
+
+        int budgetBase = 12;
+        int shrink = MemoryBuilder.estimateTokens(withCtx, COEF) - MemoryBuilder.estimateTokens(base, COEF);
+        assertEquals(12, shrink);
+
+        assertEquals(3, MemoryBuilder.assemble(asc, base, budgetBase, COEF).size());
+        // 预算被上下文扣掉 12 → 0，只剩「最新一条」强制保留 + 系统消息
+        assertEquals(2, MemoryBuilder.assemble(asc, withCtx, budgetBase - shrink, COEF).size());
+    }
+
     private static ConversationMessage msg(int seq, String role, String content) {
         ConversationMessage m = new ConversationMessage();
         m.setSeq(seq);

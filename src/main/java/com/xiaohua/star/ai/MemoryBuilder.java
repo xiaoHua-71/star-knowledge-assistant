@@ -44,12 +44,24 @@ public class MemoryBuilder {
      * <p>调用时机是「用户消息已落库之后」，所以取到的历史里已包含当前用户消息，无需另行追加。
      */
     public List<ChatMessage> build(Long conversationId, String systemPrompt) {
+        return build(conversationId, systemPrompt, null);
+    }
+
+    /**
+     * 带检索上下文的重建（RAG 用，见 knowledge/23-混合检索与融合.md）。
+     *
+     * <p>检索到的资料<b>并入同一条 system 消息</b>（而非另起一条 SystemMessage）：一是避免不同
+     * provider 对多条 system 的处理差异，二是让 context 的 token 自动计入 {@link MemoryProperties#historyBudget}
+     * ——预算不够时优先挤历史，不会让资料把上下文撑爆。
+     */
+    public List<ChatMessage> build(Long conversationId, String systemPrompt, String retrievedContext) {
+        String fullSystem = composeSystem(systemPrompt, retrievedContext);
         List<ConversationMessage> asc = conversationMessageService.listPromptVisibleAsc(conversationId);
         double coef = memoryProperties.getTokenPerChar();
-        int budget = memoryProperties.historyBudget(estimateTokens(systemPrompt, coef));
-        List<ChatMessage> messages = assemble(asc, systemPrompt, budget, coef);
-        log.debug("记忆重建: conversationId={}, 历史共 {} 条, 预算 {} token, 实发 {} 条",
-                conversationId, asc.size(), budget, messages.size() - 1);
+        int budget = memoryProperties.historyBudget(estimateTokens(fullSystem, coef));
+        List<ChatMessage> messages = assemble(asc, fullSystem, budget, coef);
+        log.debug("记忆重建: conversationId={}, 历史共 {} 条, 预算 {} token, 含检索资料={}, 实发 {} 条",
+                conversationId, asc.size(), budget, !fullSystem.equals(systemPrompt), messages.size() - 1);
         return messages;
     }
 
@@ -66,6 +78,14 @@ public class MemoryBuilder {
             return 0;
         }
         return (int) Math.ceil(text.length() * tokenPerChar);
+    }
+
+    /** 把检索上下文并入系统提示词，合成同一条 system 消息。空白上下文原样返回系统提示词。 */
+    static String composeSystem(String systemPrompt, String retrievedContext) {
+        if (retrievedContext == null || retrievedContext.isBlank()) {
+            return systemPrompt;
+        }
+        return systemPrompt + "\n\n" + retrievedContext;
     }
 
     /**
