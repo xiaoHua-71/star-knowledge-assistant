@@ -127,6 +127,11 @@ ai:
     safety-ratio: 0.8       # 预算只用 80%，留余量吸收「按字符估算」的误差
     token-per-char: 1.5     # token ≈ 字符数 × 本值（未标定；中文/英文差异大，单系数只是近似）
 
+  # Agent 主循环（工具调用，见 knowledge/30）。
+  agent:
+    max-rounds: 8           # 工具调用循环的最大轮次护栏（一轮 = 一次「模型响应 + 可能的一批工具执行」）
+    max-tool-result-chars: 4000   # 单个工具结果进 prompt / 事件前的最大字符数，超出截断
+
 # 知识库原始文件落盘目录（knowledge_document.filePath）
 knowledge:
   storage-dir: ./uploads

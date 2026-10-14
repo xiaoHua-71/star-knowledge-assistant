@@ -1,6 +1,6 @@
 # SSE 协议规范（流式对话）
 
-> 🟡 **状态：协议已定稿；M6「最小版」已实现其中 `run_start` / `message_delta` / `run_end` / `error` 四个事件（2026-10-12，见 [30-chat](30-chat-对话与流式.md) 落地记录）。重连补发、`interrupt`、`agent_event` 持久化等仍未实现（属 M8）。**
+> 🟡 **状态：M6「最小版」实现了 `run_start` / `message_delta` / `run_end` / `error`（2026-10-12）；M7 追加 `tool_call` / `tool_result`（2026-10-14）；**M8 落地事件持久化（2026-10-14）——里程碑事件写入 `agent_event`、其自增 id 即 SSE 的 `id`，`runId` 变真实值；`message_delta` 不落库、不带 `id`。** 重连补发（`GET /agent/run/{runId}/stream`）、`interrupt` / 续跑仍未实现（属 M9）。**
 
 ## 一、为什么是 SSE，不是 WebSocket
 
@@ -114,7 +114,7 @@ data: {"runId":"100","conversationId":"7","messageId":"55"}
 
 ```
 
-- **`id`**：事件游标，**是字符串**（后端的 `Long` 都输出成字符串，见 [01-通用约定](01-通用约定.md)）。重连时要把它带回去
+- **`id`**：事件游标，**是字符串**（后端的 `Long` 都输出成字符串，见 [01-通用约定](01-通用约定.md)）。重连时要把它带回去。⚠️ **只有里程碑事件带 `id`**（=`agent_event.id`：`run_start`/`tool_call`/`tool_result`/`run_end`/`error`）；**`message_delta` 不带 `id`**（它不落库）。重连游标应取**最后一个里程碑事件**的 `id`
 - **`event`**：事件类型，见下表
 - **`data`**：JSON，**单行**（换行已被转义为 `\n`，不需要处理跨行拼接）
 

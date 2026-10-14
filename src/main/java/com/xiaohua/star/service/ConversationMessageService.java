@@ -31,6 +31,13 @@ public interface ConversationMessageService extends IService<ConversationMessage
                                       String content, Integer tokenCount);
 
     /**
+     * 同 {@link #appendMessage(Long, Long, String, String, Integer)}，额外记下消息属于哪次运行
+     * （助手消息用，见 knowledge/12）。{@code runId} 为 null 时与五参版等价。
+     */
+    ConversationMessage appendMessage(Long conversationId, Long userId, String role,
+                                      String content, Integer tokenCount, Long runId);
+
+    /**
      * 取该会话全部 promptVisible=1 的消息，按 seq 升序。用于重建 prompt（最小闭环不裁剪）。
      */
     List<ConversationMessage> listPromptVisibleAsc(Long conversationId);

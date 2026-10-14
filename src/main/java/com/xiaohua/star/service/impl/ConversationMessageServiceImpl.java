@@ -13,6 +13,7 @@ import com.xiaohua.star.mapper.ConversationMessageMapper;
 import com.xiaohua.star.model.entity.Conversation;
 import com.xiaohua.star.model.entity.ConversationMessage;
 import com.xiaohua.star.model.vo.MessageVO;
+import com.xiaohua.star.service.AgentStateService;
 import com.xiaohua.star.service.ConversationMessageService;
 import com.xiaohua.star.service.ConversationService;
 import jakarta.annotation.Resource;
@@ -48,6 +49,9 @@ public class ConversationMessageServiceImpl extends ServiceImpl<ConversationMess
     @Resource
     private ConversationService conversationService;
 
+    @Resource
+    private AgentStateService agentStateService;
+
     @Override
     public IPage<MessageVO> listPage(Long conversationId, Long userId, int current, int pageSize) {
         conversationService.getOwnedOrThrow(conversationId, userId);
@@ -64,12 +68,14 @@ public class ConversationMessageServiceImpl extends ServiceImpl<ConversationMess
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int truncateFrom(Long conversationId, Long userId, Integer fromSeq) {
-        // TODO(M8): 若该会话存在 RUNNING 的 agent_run，抛 50001「当前有正在进行的回答，请先停止」。
-        //           agent_run 表到 M8 才建，本里程碑没有「运行中」概念，故暂不校验。
         if (fromSeq == null || fromSeq < 1) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "fromSeq 不合法");
         }
         Conversation c = lockAndOwn(conversationId, userId);
+        // 有运行中的回答时不允许截断：否则会与循环结束时落的助手消息打架（seq/内容都对不上）。
+        if (agentStateService.hasActiveRun(conversationId)) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "当前有正在进行的回答，请先停止");
+        }
         int deleted = baseMapper.delete(new QueryWrapper<ConversationMessage>()
                 .eq("conversationId", conversationId)
                 .ge("seq", fromSeq));
@@ -86,6 +92,13 @@ public class ConversationMessageServiceImpl extends ServiceImpl<ConversationMess
     @Transactional(rollbackFor = Exception.class)
     public ConversationMessage appendMessage(Long conversationId, Long userId, String role,
                                              String content, Integer tokenCount) {
+        return appendMessage(conversationId, userId, role, content, tokenCount, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ConversationMessage appendMessage(Long conversationId, Long userId, String role,
+                                             String content, Integer tokenCount, Long runId) {
         Conversation c = lockAndOwn(conversationId, userId);
         int seq = (c.getMessageCount() == null ? 0 : c.getMessageCount()) + 1;
 
@@ -95,6 +108,7 @@ public class ConversationMessageServiceImpl extends ServiceImpl<ConversationMess
 
         ConversationMessage m = new ConversationMessage();
         m.setConversationId(conversationId);
+        m.setRunId(runId);
         m.setSeq(seq);
         m.setRole(role);
         m.setContent(content);

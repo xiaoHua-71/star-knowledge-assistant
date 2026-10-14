@@ -1,8 +1,11 @@
 package com.xiaohua.star.service.impl;
 
+import com.xiaohua.star.agent.AgentEventSink;
+import com.xiaohua.star.agent.AgentRunner;
+import com.xiaohua.star.agent.RunContext;
 import com.xiaohua.star.ai.MemoryBuilder;
-import com.xiaohua.star.ai.RetrievalContextBuilder;
 import com.xiaohua.star.common.ErrorCode;
+import com.xiaohua.star.config.AgentExecutorConfig;
 import com.xiaohua.star.exception.BusinessException;
 import com.xiaohua.star.model.dto.conversation.ChatMessageRequest;
 import com.xiaohua.star.model.entity.Conversation;
@@ -12,8 +15,6 @@ import com.xiaohua.star.service.ConversationMessageService;
 import com.xiaohua.star.service.ConversationService;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.model.chat.StreamingChatModel;
-import dev.langchain4j.model.chat.response.ChatResponse;
-import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
@@ -25,24 +26,20 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 流式对话实现（M6 最小可用版 + 自动检索：无 run、无中断/重连）。见 frontend/02、frontend/30。
+ * 流式对话实现（M6 消息流 + M7 工具循环 + M8 状态落库）。见 frontend/02、frontend/30、knowledge/12。
  *
- * <p>已接入<b>自动检索（RAG）</b>：按 {@code kbIds} 取命中片段拼进 prompt（见 {@link RetrievalContextBuilder}），
- * 检索失败退化为无 RAG。
+ * <p>本类只做<b>接入与传输</b>：校验 / 会话归属 / 取模型 / 事务#1 落用户消息 / 重建 prompt / 建 SSE，
+ * 然后把 {@link AgentRunner#run} 提交到 {@code agentExecutor}。**运行状态、事件、助手消息的落库全在
+ * {@code AgentRunner}**，它通过 {@link AgentEventSink} 把事件推回这里——这里只负责转成 SSE。
  *
- * <p>与非流式 {@link ChatServiceImpl} 同构：建流阶段（校验 / 归属 / 取模型 / 事务#1 落用户消息 /
- * 重建 prompt）在调用线程同步完成；模型调用异步非阻塞，逐段回答经回调在 HTTP 客户端线程推
- * {@code message_delta}；正常结束在回调里做事务#2 落助手消息，再推 {@code run_end}。
+ * <p>M8 起 {@code runId} 是真实的 {@code agent_run.id}（不再是占位 UUID），事件的 `id` 是
+ * {@code agent_event.id}；`message_delta` 不落库、不带 `id`（重连靠 `message_snapshot`，属 M9）。
  *
- * <p>两个短事务跨 bean 调用（走 {@code @Transactional} 代理），模型调用在事务之外。
- *
- * <p>runId 目前是占位 UUID（无 agent_run 表）；事件 id 用内存自增游标，不持久化、不可重放——
- * 这些是 M8 的 run / 事件持久化才补。
+ * <p><b>客户端断开后循环仍会跑完并落库</b>（只有推流被 sink 跳过）——取消逻辑属 M9。
  */
 @Slf4j
 @Service
@@ -65,7 +62,10 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private MemoryBuilder memoryBuilder;
 
     @Resource
-    private RetrievalContextBuilder retrievalContextBuilder;
+    private AgentRunner agentRunner;
+
+    @Resource(name = AgentExecutorConfig.AGENT_EXECUTOR)
+    private Executor agentExecutor;
 
     @Override
     public SseEmitter stream(ChatMessageRequest request, Long userId) {
@@ -92,130 +92,75 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                     "对话模型未配置（缺少 ai.chat.api-key / DEEPSEEK_API_KEY），无法对话");
         }
 
-        // 4. 落用户消息（事务 #1，跨 bean 短事务）。tokenCount 记估算值。
+        // 4. 落用户消息（事务 #1）。tokenCount 记估算值。
         ConversationMessage userMsg = conversationMessageService.appendMessage(
                 request.getConversationId(), userId,
                 ConversationMessage.ROLE_USER, content, memoryBuilder.estimate(content));
 
-        // 4.5 自动检索（RAG）：解析要用哪些库（请求 kbIds 覆盖 / 否则用会话关联 / 空数组不检索），
-        //     取命中片段拼成上下文。任何失败都吞掉退化为无 RAG，绝不让检索拖垮对话。
-        String retrievedContext = null;
-        try {
-            retrievedContext = retrievalContextBuilder.build(
-                    resolveKbIds(request, conversation), content, userId);
-        } catch (Exception e) {
-            log.warn("检索上下文构建失败，按无 RAG 继续: conversationId={}", request.getConversationId(), e);
-        }
+        // 5. 运行上下文：工具经 @ToolMemoryId 拿到它（userId / 会话 / 生效的知识库范围）
+        RunContext ctx = new RunContext(userId, request.getConversationId(),
+                resolveKbIds(request, conversation));
 
-        // 5. 重建 prompt（系统消息[+检索资料] + 预算内历史，末条即刚落的用户消息）
+        // 6. 重建 prompt（系统消息 + 预算内历史；末条即刚落的用户消息）
         List<ChatMessage> prompt = memoryBuilder.build(
-                request.getConversationId(), ChatServiceImpl.SYSTEM_PROMPT, retrievedContext);
+                request.getConversationId(), ChatServiceImpl.SYSTEM_PROMPT);
 
-        // 6. 建 emitter，先发 run_start。此时尚未 initialize，事件会被缓冲并按序回放，不丢。
+        // 7. 建 emitter 与事件出口（loop 先 run，sink 只负责推 SSE；生命周期由本方法收尾）
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
-        String runId = UUID.randomUUID().toString();
-        AtomicBoolean closed = new AtomicBoolean(false);
         AtomicBoolean clientGone = new AtomicBoolean(false);
-        AtomicLong seq = new AtomicLong();
 
-        emitter.onTimeout(() -> {
-            log.warn("SSE 超时未结束: conversationId={}", request.getConversationId());
-            closed.set(true);
-            emitter.complete();
-        });
+        emitter.onTimeout(() -> log.warn("SSE 超时未结束: conversationId={}", request.getConversationId()));
         emitter.onError(t -> log.warn("SSE 异步错误: conversationId={}", request.getConversationId(), t));
         emitter.onCompletion(() -> log.debug("SSE 完成: conversationId={}", request.getConversationId()));
 
-        try {
-            emitter.send(SseEmitter.event()
-                    .id(String.valueOf(seq.incrementAndGet()))
-                    .name("run_start")
-                    .data(Map.of(
-                                    "runId", runId,
-                                    "conversationId", request.getConversationId(),
-                                    "messageId", userMsg.getId()),
-                            MediaType.APPLICATION_JSON)
-                    .build());
-        } catch (IOException e) {
-            // 初始化前的 send 走缓冲，理论上不抛；保险起见按断开处理
-            clientGone.set(true);
-        }
-
-        // 7. 调模型（异步非阻塞，立即返回；回调在 HTTP 客户端线程）
-        model.chat(prompt, new StreamingChatResponseHandler() {
-
+        AgentEventSink sink = new AgentEventSink() {
             @Override
-            public void onPartialResponse(String partial) {
-                if (clientGone.get() || closed.get()) {
-                    return;
-                }
-                try {
-                    emitter.send(SseEmitter.event()
-                            .id(String.valueOf(seq.incrementAndGet()))
-                            .name("message_delta")
-                            .data(Map.of("delta", partial), MediaType.APPLICATION_JSON)
-                            .build());
-                } catch (IOException e) {
-                    // 客户端断开：不落助手消息，直接收尾
-                    clientGone.set(true);
-                    closed.set(true);
-                    emitter.complete();
-                } catch (IllegalStateException e) {
-                    closed.set(true); // emitter 已完成
-                }
+            public void onEvent(long eventId, String eventName, Object data) {
+                send(emitter, clientGone, eventId, eventName, data);
             }
 
             @Override
-            public void onCompleteResponse(ChatResponse response) {
-                if (clientGone.get() || closed.get()) {
-                    closed.set(true);
-                    return; // 客户端已断，不落库、不发送
-                }
-                String answer = response.aiMessage().text();
-                Integer tokens = null;
-                if (response.metadata() != null && response.metadata().tokenUsage() != null) {
-                    tokens = response.metadata().tokenUsage().totalTokenCount();
-                }
-                try {
-                    // 事务 #2：只在正常结束时落助手消息
-                    ConversationMessage assistant = conversationMessageService.appendMessage(
-                            request.getConversationId(), userId,
-                            ConversationMessage.ROLE_ASSISTANT, answer, tokens);
-
-                    emitter.send(SseEmitter.event()
-                            .id(String.valueOf(seq.incrementAndGet()))
-                            .name("run_end")
-                            .data(Map.of(
-                                            "runId", runId,
-                                            "status", "COMPLETED",
-                                            "messageId", assistant.getId()),
-                                    MediaType.APPLICATION_JSON)
-                            .build());
-                    closed.set(true);
-                    emitter.complete();
-                } catch (IOException e) {
-                    // run_end 发送失败（客户端已断）：助手消息已落库，仅记录
-                    log.warn("run_end 发送失败(客户端断开): conversationId={}", request.getConversationId());
-                    closed.set(true);
-                    emitter.complete();
-                } catch (Exception e) {
-                    log.error("流式收尾失败: conversationId={}", request.getConversationId(), e);
-                    sendError(emitter, seq, runId, ErrorCode.SYSTEM_ERROR, "收尾失败");
-                    closed.set(true);
-                    emitter.complete();
-                }
+            public void onDelta(String delta) {
+                send(emitter, clientGone, null, "message_delta", Map.of("delta", delta));
             }
+        };
 
-            @Override
-            public void onError(Throwable t) {
-                log.warn("流式模型调用失败: conversationId={}", request.getConversationId(), t);
-                sendError(emitter, seq, runId, ErrorCode.OPERATION_ERROR, "模型调用失败：" + t.getMessage());
-                closed.set(true);
+        // 8. 跑落库循环（提交到 agentExecutor，请求线程立即释放）
+        agentExecutor.execute(() -> {
+            try {
+                agentRunner.run(model, ctx, userMsg.getId(), prompt, sink);
+            } catch (Exception e) {
+                // 错误事件已由 AgentRunner（经 sink）推给前端，这里只记日志
+                log.warn("Agent 运行失败: conversationId={}", request.getConversationId(), e);
+            } finally {
                 emitter.complete();
             }
         });
 
         return emitter;
+    }
+
+    /**
+     * 发一个 SSE 事件。客户端已断则静默跳过；发送失败只置标志（循环不需要知道连接状态）。
+     *
+     * @param id 里程碑事件用 {@code agent_event.id}；{@code message_delta} 传 {@code null}（不落库、不可重放）
+     */
+    private void send(SseEmitter emitter, AtomicBoolean clientGone, Long id, String event, Object data) {
+        if (clientGone.get()) {
+            return;
+        }
+        try {
+            SseEmitter.SseEventBuilder builder = SseEmitter.event();
+            if (id != null) {
+                builder.id(String.valueOf(id));
+            }
+            builder.name(event).data(data, MediaType.APPLICATION_JSON);
+            emitter.send(builder.build());
+        } catch (IOException e) {
+            clientGone.set(true);
+        } catch (IllegalStateException ignored) {
+            // emitter 已完成：收尾竞态，忽略
+        }
     }
 
     /**
@@ -242,25 +187,5 @@ public class ChatStreamServiceImpl implements ChatStreamService {
             }
         }
         return ids;
-    }
-
-    /**
-     * 推 error 事件（协议里唯一带 code 的事件），客户端已断时静默忽略。
-     */
-    private void sendError(SseEmitter emitter, AtomicLong seq, String runId, ErrorCode code, String message) {
-        try {
-            emitter.send(SseEmitter.event()
-                    .id(String.valueOf(seq.incrementAndGet()))
-                    .name("error")
-                    .data(Map.of(
-                                    "code", code.getCode(),
-                                    "message", message,
-                                    "runId", runId,
-                                    "retryable", false),
-                            MediaType.APPLICATION_JSON)
-                    .build());
-        } catch (Exception ignored) {
-            // 客户端已断开，无需再报错
-        }
     }
 }

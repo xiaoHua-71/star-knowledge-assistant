@@ -1,6 +1,6 @@
 # chat · 对话与流式
 
-> ✅ **状态：`POST /chat/message`（非流式）M4 已实现；`POST /chat/stream`（流式）M6「最小版」+ 自动检索已实现（2026-10-12 / 2026-10-13，见文末「落地记录」）。断线回放 / 中断 / run 持久化仍未实现（属 M8）。**
+> ✅ **状态：`POST /chat/message`（非流式）M4；`POST /chat/stream`（流式）M6「最小版」+ M7 工具调用循环（检索改为「工具」）+ **M8 运行状态落库** 均已实现（见文末「落地记录」）。断线回放 / 中断 / 续跑仍未实现（属 M9）。**
 
 ## 这个模块只有一个核心接口
 
@@ -127,17 +127,17 @@ Content-Type: application/json
 - 运行中**不能**通过消息列表接口看到正在生成的回答（要等结束，或者用重连机制拿 `message_snapshot`）
 - 运行被中断时，半截的回答**不作为消息保存**（否则用户继续之后会看到两条回复）
 
-### 检索是自动的 ✅（2026-10-13 落地）
+### 回答里可能带工具调用（M7，2026-10-14）⚠️ 行为变化
 
-如果本次（或会话）关联了知识库，后端会在调模型之前自动检索，并把命中的片段拼进 prompt。**这些过程前端看不到**（不推事件）——用户只看到答案。
+**M7 起，流式对话不再「自动检索」。** 单次模型调用被换成 **ReAct 工具循环**（「模型 → 工具 → 模型…」），检索改由模型按需调用 `searchKnowledge` 工具完成（见 [60-tools](60-tools-工具.md)、[knowledge/30](../knowledge/30-工具调用.md)）。
 
-- 用哪些库由 `kbIds` 决定：请求带了就用请求的（临时覆盖，不改会话关联），没带就用会话关联的，传 `[]` 表示本次不用 RAG。
-- 关联多个库时，后端**逐库检索再合并**（交错取，不是把分数混在一起全局排序）。
-- 检索失败（库被删 / 越权 / 向量模型不匹配）**不会让请求失败**——退化为「不带资料正常回答」，用户无感。
+- 调用了工具时，前端会收到 `tool_call`（开始）与 `tool_result`（结束）事件——**工具调用过程现在是可见的**。
+- 用哪些库仍由 `kbIds` 决定（语义不变）：请求带了用请求的，没带用会话关联的，`[]` 表示本次不关联任何库（此时 `searchKnowledge` 返回「没有关联知识库」给模型）。
+- **与 M6 的行为差异**：以前是「**必检索**」（每次对话都自动找资料），现在是「**择机检索**」——**模型不调就不召回**。这是刻意取舍（理由见 [knowledge/30](../knowledge/30-工具调用.md) 3.3），效果待评测集验证。
+- 检索失败（库被删 / 越权 / 向量模型不匹配）仍**不会让请求失败**：`searchKnowledge` 逐库吞异常，返回「未找到」文本给模型。
+- 循环有**轮次护栏**（`ai.agent.max-rounds`，默认 8）。撞护栏时后端仍会推 `run_end`（`status=COMPLETED`），回答可能是一条兜底提示。
 
-**为什么不做成可见的**：检索是「怎么找到答案」的过程，不是用户关心的内容。用户关心的是答案本身和它引用了什么。
-
-**但如果你想在界面上展示引用来源**：目前协议里没有这个事件。可以加一个 `references` 事件（列出用到的文档名和片段），这是**待定功能**，需要的话提出来。
+> 想展示「引用了哪几篇文档」：`tool_result`（`toolName=searchKnowledge`）的 `result` 里已含命中片段/来源，可从中提取。一个更规范的 `references` 事件仍是**待定功能**。
 
 ## 与其它接口的关系
 
@@ -173,46 +173,61 @@ Content-Type: application/json
 
 重连时**必须带上最后收到的事件 id**（`lastEventId`），否则会收到重复的事件。
 
-## 落地记录（M6 最小版，2026-10-12；自动检索，2026-10-13）
+## 落地记录（M6 最小版，2026-10-12；M7 工具调用，2026-10-14）
 
 `POST /api/chat/stream` 已实现**最小可用版**（`service/ChatStreamService` + `impl/ChatStreamServiceImpl`，`ChatController#stream`），前端一字未改即可逐字收答案。
 
-### 自动检索（2026-10-13）
+### 工具调用（M7，2026-10-14）
 
-`ChatStreamServiceImpl` 在建 prompt 前按 `kbIds` 自动检索，命中片段并入同一条 system 消息（`MemoryBuilder.build(convId, systemPrompt, retrievedContext)`）。多库逐库检索后**交错合并**（`ai/RetrievalContextBuilder`），非按分数全局排序；检索失败逐库吞掉、整体退化为无 RAG。**不推任何事件**，前端无感。
+`ChatStreamServiceImpl` 把单次模型调用换成 `agent/AgentLoop` 的 **ReAct 循环**（跑在专用 `agentExecutor` 线程池上）：每轮带工具清单调模型，模型要求调工具就执行、把结果回填历史、再循环，直到产出最终回答或撞 `ai.agent.max-rounds` 护栏（默认 8）。**自动检索已移除**，检索改由 `searchKnowledge` 工具承担。
 
-- 关键实现：`ai/RetrievalContextBuilder`（per-KB topK=3、合并上限 5、单条正文截断 800 字、带防提示注入的免责声明）、`ChatStreamServiceImpl#resolveKbIds`。
-- 边界：`knowledge.search.minScore=0` 时**非空库对任何问题都会返回 topK**，因此**纯闲聊也会注入最多 5 条无关片段**。根治要等评测集标定分数阈值（见 [knowledge/23](../knowledge/23-混合检索与融合.md)），当前靠条数上限 + 免责声明缓解。
+- 关键实现：`agent/AgentToolRegistry`（`@Tool` 扫描 + schema 生成 + 执行 + 启动校验）、`agent/AgentLoop`（循环 + 护栏 + 结果截断）、`agent/tool/{SystemTimeTool,KnowledgeTool}`、`agent/RunContext`（经 `@ToolMemoryId` 注入）。
+- 工具集（**只读**）：`getCurrentTime`、`searchKnowledge`。副作用工具 / 人工确认属 M10。
+- （M7 当时**不落库**：`runId` 是占位 UUID、`stepId` 是每 run 内存自增——**M8 已补**，见下。）
+- 新增清单接口 `GET /tools/list`（见 [60-tools](60-tools-工具.md)）。
+- 边界：客户端断开后循环仍会把剩余轮次跑完（`sink` 只是停止推流），见 [knowledge/30](../knowledge/30-工具调用.md) 坑 6。
+
+### 运行状态落库（M8，2026-10-14）
+
+`ChatStreamServiceImpl` 不再自己造 `runId`、不再自己发 `run_start`/`run_end`——运行状态、事件、助手消息的落库全部交由 `agent/AgentRunner`（`AgentLoop` 的落库版）。前端**行为不变**，但两处数据更实在了：
+
+- **`runId` 变真实**：是 `agent_run.id`（不再是占位 UUID）。`run_end` 的 `messageId` = 助手消息 id。
+- **里程碑事件带 `id`**：`run_start`/`tool_call`/`tool_result`/`run_end` 的 SSE `id` 就是 `agent_event.id`（数据库自增）。**`message_delta` 不带 `id`**——重连游标取最后一个里程碑事件的 `id`。
+- 落库轨迹：每轮 `agent_step(LLM_CALL)`、每个工具 `agent_step(TOOL_CALL)`（**先落意图再执行**）、事件进 `agent_event`；助手消息带 `runId`。审计链可查。
+- **边界**：客户端断开后循环**仍会跑完并落库**（只有推流被跳过）——取消逻辑属 M9。`truncateFrom`（截断重发）新增「该会话有未结束运行时拒绝（`50001`）」。
+- 设计细节见 [knowledge/12](../knowledge/12-中断与恢复的状态机.md) ⑥。
 
 ### 已实现的事件（可直接联调）
 
 | 事件 | 状态 | `data` 字段 | 与 [02-SSE协议规范](02-SSE协议规范.md) 事件类型表的差异 |
 |---|---|---|---|
-| `run_start` | ✅ | `{runId, conversationId, messageId}` | `runId` 是**占位 UUID**（无 `agent_run` 表）；`messageId` = 用户消息 id |
-| `message_delta` | ✅ | `{delta}` | **只有 `delta`，没有 `messageId`**（规范里是 `{messageId, delta}`） |
-| `run_end` | ✅ | `{runId, status:"COMPLETED", messageId}` | **没有 `usage` / `elapsedMs`**；`messageId` = 助手消息 id |
+| `run_start` | ✅ | `{runId, conversationId, messageId}` | `runId` = 真实 `agent_run.id`（M8 起，不再是占位 UUID）；`messageId` = 用户消息 id |
+| `message_delta` | ✅ | `{delta}` | **只有 `delta`、没有 `id`、没有 `messageId`**（不落库，不可重放） |
+| `tool_call` | ✅（M7） | `{stepId, toolCallId, toolName, arguments, sideEffect}` | `stepId` = `agent_step.id`（M8 起）；`arguments` 是**解析后的对象** |
+| `tool_result` | ✅（M7） | `{stepId, toolCallId, success, elapsedMs, result, truncated}` | `result` 是**解析后的对象**（非 JSON 文本会包成 `{"text": ...}`）；`elapsedMs` 是数字 |
+| `run_end` | ✅ | `{runId, status:"COMPLETED", messageId, elapsedMs, rounds}` | **没有 `usage`**（token 用量未推）；M7 起新增 `elapsedMs` / `rounds` |
 | `error` | ✅ | `{code, message, runId, retryable}` | 一致（模型调用失败时推） |
-| `todo_update` / `tool_call` / `tool_result` | ❌ 未实现 | — | 无 Agent、无工具 |
+| `todo_update` | ❌ 未实现 | — | 无计划功能 |
 | `message_snapshot` | ❌ 未实现 | — | 无持久化事件，不可续传 |
 | `interrupt` | ❌ 未实现 | — | 也无 `interrupt` / `resume` / `approve` 接口 |
 | `ping` | ❌ 未实现 | — | 无心跳保活 |
 
 ### 前端当前「可以做」与「别做」
 
-**可以做**：发消息 → 逐字**追加**显示 → 收到 `run_end` 收尾（清「生成中」、刷新会话列表）→ 拉历史消息。这条主链路端到端可联调。
+**可以做**：发消息 → 逐字**追加**显示 → 收到 `run_end` 收尾（清「生成中」、刷新会话列表）→ 拉历史消息；以及渲染 `tool_call` / `tool_result`（如「正在检索知识库…」的进度提示，中文名用 `GET /tools/list` 映射）。这条主链路端到端可联调。
 
 **别实现（依赖的事件 / 接口未落地，属 M8）**：
 - **停止 / 继续 / 人工确认**：无 `interrupt` 事件，也没有 `POST /agent/run/{runId}/interrupt|resume|approve`。
-- **断线重连**：事件 `id` 是内存自增、不落库、不可续传，`GET /agent/run/{runId}/stream` 不存在。断线只能**重新拉历史消息**恢复界面。
+- **断线重连**：里程碑事件的 `id` 已落库（续传的基础已就绪，M8），但 `GET /agent/run/{runId}/stream` 接口尚未实现（M9）。断线目前只能**重新拉历史消息**恢复界面。
 - **基于 `ping` 的心跳 / 连接存活判断**：无 `ping`。
 - **50001 并发护栏**：后端**没有**校验「该会话已有正在进行的运行」，同一会话连点两次发送不会拦——前端需自己在「生成中」**禁用发送按钮**。
-- **引用来源展示**：后端**已自动检索**（见上文 §检索是自动的），但仍无 `references` 事件——检索结果只喂给模型，不推给前端。
+- **规范化的引用来源事件**：`tool_result`（`toolName=searchKnowledge`）的 `result` 里已含检索片段/来源，可临时提取；专门的 `references` 事件仍未做。
 
 ### 其它取巧点 / 边界
 
 - 复用现有两段短事务（`ConversationMessageService#appendMessage`）与 `MemoryBuilder.build()` 的 `List<ChatMessage>`，直接喂已装配的 `streamingChatModel` Bean。
 - 建流前失败（40100 / 40000 / 40400 / 50001）必须回 **JSON 信封**而不是 event-stream —— 后端有个 406 陷阱，见 [02-SSE协议规范](02-SSE协议规范.md) 坑 2 的「后端实现注意」。
-- **已接入自动检索**（`kbIds` 语义生效，见 §检索是自动的）；仍无中断 / 重连 / 续跑。
+- **已接入工具调用循环**（`kbIds` 语义仍生效，但检索改为 `searchKnowledge` 工具，见 §回答里可能带工具调用）；仍无中断 / 重连 / 续跑。
 - **前置条件**：环境变量 `DEEPSEEK_API_KEY` 必须设，否则 `streamingChatModel` Bean 不装配（`ChatModelConfig`），建流直接回 50001（模型未配置）。
 
 ## 前端类型定义（可直接复制）
@@ -231,7 +246,7 @@ export interface ChatRequest {
 
 // ---- /chat/stream 已实现的事件 payload（完整协议见 [02-SSE协议规范](02-SSE协议规范.md)）----
 export interface RunStartPayload {
-  runId: string;            // ⚠️ 占位 UUID（无 agent_run 表）
+  runId: string;            // = agent_run.id（M8 起是真实值，不再是占位 UUID）
   conversationId: string;
   messageId: string;        // = 用户消息 id
 }
@@ -240,8 +255,25 @@ export interface MessageDeltaPayload {
 }
 export interface RunEndPayload {
   runId: string;
-  status: 'COMPLETED';      // ⚠️ 无 usage / elapsedMs
+  status: 'COMPLETED';      // ⚠️ 无 usage（token 用量未推）
   messageId: string;        // = 助手消息 id
+  elapsedMs: number;        // 本次运行耗时（M7 起新增）
+  rounds: number;           // 工具循环跑了多少轮（M7 起新增）
+}
+export interface ToolCallPayload {          // M7
+  stepId: string;
+  toolCallId: string;
+  toolName: string;
+  arguments: unknown;       // 解析后的对象（一般是 {参数名: 值}）
+  sideEffect: boolean;
+}
+export interface ToolResultPayload {        // M7
+  stepId: string;
+  toolCallId: string;
+  success: boolean;
+  elapsedMs: number;        // 数字
+  result: unknown;          // 解析后的对象；非 JSON 文本为 { text: string }
+  truncated: boolean;       // 结果被截断过
 }
 export interface ErrorPayload {
   code: number;
@@ -251,7 +283,7 @@ export interface ErrorPayload {
 }
 ```
 
-> `todo_update` / `tool_call` / `tool_result` / `message_snapshot` / `interrupt` / `ping` 属 M8，前端**暂不实现**（见上方「已实现的事件」表）。事件类型在 [02-SSE协议规范](02-SSE协议规范.md) 第五节有完整定义。
+> `todo_update` / `message_snapshot` / `interrupt` / `ping` 属 M8，前端**暂不实现**（见上方「已实现的事件」表）。`tool_call` / `tool_result` 已在 M7 实现。事件类型在 [02-SSE协议规范](02-SSE协议规范.md) 第五节有完整定义。
 
 ## 待定项
 
