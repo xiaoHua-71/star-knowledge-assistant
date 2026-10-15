@@ -208,7 +208,7 @@ Content-Type: application/json
 | `run_end` | ✅ | `{runId, status:"COMPLETED", messageId, elapsedMs, rounds}` | **没有 `usage`**（token 用量未推）；M7 起新增 `elapsedMs` / `rounds` |
 | `error` | ✅ | `{code, message, runId, retryable}` | 一致（模型调用失败时推） |
 | `todo_update` | ❌ 未实现 | — | 无计划功能 |
-| `message_snapshot` | ❌ 未实现 | — | 无持久化事件，不可续传 |
+| `message_snapshot` | ❌ 未实现 | — | 事件已落库（M8），但重连接口未做，故本事件尚未推出（M9） |
 | `interrupt` | ❌ 未实现 | — | 也无 `interrupt` / `resume` / `approve` 接口 |
 | `ping` | ❌ 未实现 | — | 无心跳保活 |
 
@@ -216,7 +216,7 @@ Content-Type: application/json
 
 **可以做**：发消息 → 逐字**追加**显示 → 收到 `run_end` 收尾（清「生成中」、刷新会话列表）→ 拉历史消息；以及渲染 `tool_call` / `tool_result`（如「正在检索知识库…」的进度提示，中文名用 `GET /tools/list` 映射）。这条主链路端到端可联调。
 
-**别实现（依赖的事件 / 接口未落地，属 M8）**：
+**别实现（依赖的事件 / 接口未落地，属 M9）**：
 - **停止 / 继续 / 人工确认**：无 `interrupt` 事件，也没有 `POST /agent/run/{runId}/interrupt|resume|approve`。
 - **断线重连**：里程碑事件的 `id` 已落库（续传的基础已就绪，M8），但 `GET /agent/run/{runId}/stream` 接口尚未实现（M9）。断线目前只能**重新拉历史消息**恢复界面。
 - **基于 `ping` 的心跳 / 连接存活判断**：无 `ping`。
@@ -283,7 +283,7 @@ export interface ErrorPayload {
 }
 ```
 
-> `todo_update` / `message_snapshot` / `interrupt` / `ping` 属 M8，前端**暂不实现**（见上方「已实现的事件」表）。`tool_call` / `tool_result` 已在 M7 实现。事件类型在 [02-SSE协议规范](02-SSE协议规范.md) 第五节有完整定义。
+> `todo_update` / `message_snapshot` / `interrupt` / `ping` 属 M9，前端**暂不实现**（见上方「已实现的事件」表）。`tool_call` / `tool_result` 已在 M7 实现。事件类型在 [02-SSE协议规范](02-SSE协议规范.md) 第五节有完整定义。
 
 ## 待定项
 

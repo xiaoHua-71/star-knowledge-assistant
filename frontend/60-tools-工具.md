@@ -1,8 +1,8 @@
 # tools · 工具
 
-> 🟡 **状态：`GET /tools/list` 已实现（M7，2026-10-14）——返回真实工具清单；`GET /tools/logs` 依赖落库，属 M8，尚未实现。** 工具清单会随业务需求增长。
+> 🟡 **状态：`GET /tools/list` 已实现（M7，2026-10-14）——返回下方「真实响应」；`GET /tools/logs` 尚未实现**（依赖的 `agent_run`/`agent_step` 表已在 M8 建好，但该接口未做）。工具清单会随业务需求增长。
 >
-> M7 已上线的工具：`searchKnowledge`（检索知识库）、`getCurrentTime`（获取当前时间），均为**只读**。`createTicket` 等**有副作用**工具属 M10。
+> 当前**已上线**的工具：`getCurrentTime`、`searchKnowledge`，均为**只读**。`createTicket` 等**有副作用**工具属 M10，**目前不在清单里**。
 
 ## 工具是什么
 
@@ -40,31 +40,41 @@ GET /api/tools/list
 
 响应：
 
+**真实响应（2026-10-14 实测，可直接对照）**：
+
 ```json
 {
   "code": 0,
   "data": [
     {
-      "name": "searchKnowledge",
-      "displayName": "检索知识库",
-      "description": "在用户的知识库中检索相关内容",
+      "name": "getCurrentTime",
+      "displayName": "获取当前时间",
+      "description": "获取当前的日期和时间。当问题涉及『现在』『今天』『几号』『几点』等需要当前时刻的信息时调用。",
       "sideEffect": false,
-      "requireApproval": false
+      "requireApproval": false,
+      "parameters": []
     },
     {
-      "name": "createTicket",
-      "displayName": "创建工单",
-      "description": "为指定人员创建一个工单",
-      "sideEffect": true,
-      "requireApproval": true,
+      "name": "searchKnowledge",
+      "displayName": "检索知识库",
+      "description": "在用户当前会话关联的知识库中检索相关内容。当问题可能与用户上传的资料/知识库有关时，调用它来获取可引用的依据，再据此回答。",
+      "sideEffect": false,
+      "requireApproval": false,
       "parameters": [
-        { "name": "title", "type": "string", "required": true, "description": "工单标题" },
-        { "name": "assignee", "type": "string", "required": true, "description": "处理人" }
+        { "name": "query", "type": "string", "required": true, "description": "检索关键词或问题，用自然语言描述要查找的内容" }
       ]
     }
-  ]
+  ],
+  "message": "ok"
 }
 ```
+
+**字段说明**：
+
+- **需登录**：未登录返回 `{"code": 40100, ...}`（普通信封）。
+- `parameters` **总是存在**：无参工具是 `[]`，有参工具是数组（`type` 是 JSON schema 类型名 `string`/`integer`/`number`/`boolean`）。
+- `sideEffect` / `requireApproval` 是 `boolean`。
+- 清单**按工具名排序**，顺序稳定。
 
 **用途**：
 
