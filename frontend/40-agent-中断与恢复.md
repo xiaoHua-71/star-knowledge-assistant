@@ -7,6 +7,20 @@
 
 这是这个项目最有特色的功能：**回答生成到一半可以停下来，之后接着继续。** 内部实现见 [knowledge/12-中断与恢复的状态机](../knowledge/12-中断与恢复的状态机.md)；这里只讲前端怎么用。
 
+## ✅ M9 接入清单（照这个做，别自由发挥）
+
+1. **停止按钮**：`loading`（生成中）时显示，点击 → `POST /api/agent/run/{runId}/interrupt`。
+   **立刻**停止把后续 `message_delta` 渲染进气泡（乐观），按钮变「停止中…」。
+   **唯一权威的「已停止」信号是收到 `interrupt` 事件**，不是接口返回、也不是连接关闭。
+2. **停止后保留 `runId`**（别清空）+ 显示「继续」按钮。点继续 → `POST …/resume` → **然后必须重新建流** `GET …/stream`（不带 `lastEventId`）。
+3. **`sseClient` 要记住「最后一个里程碑事件的 `id`」**（现在解析了 `id` 但丢掉了）。网络断了 → `GET …/stream?lastEventId=<记下的 id>`，重试几次；带上它会少补发一堆事件。
+4. **需要一个 GET 版读流函数**：现有 `chatStream` 只支持 POST；重连接口是 GET。可照抄它的 fetch+解析逻辑改成 GET，或用原生 `EventSource`（这是唯一能用它的接口）。
+5. **`runId` 写进 URL**（`/chat/{conversationId}?run={runId}`），刷新后用 `GET /api/agent/run/{runId}` 的 `status` 决定「重连流」还是显示「继续」。
+6. **事件处理必须幂等**（重连/继续会从头重放）——细节见下面「重连 / 继续都会从头重放本运行的事件」一节。
+7. **读 `interruptType`**（`USER_STOP` / `SERVER_RESTART` / `NEW_MESSAGE`）区分文案（如「已停止」/「服务重启导致中断」/「已开始处理新消息」）。
+8. **类型补 `AgentRunVO`**（见下）。
+9. 现在把 `interrupt` 走 `error.value` 显示，观感突兀——建议改成独立的「已停止」状态条，而不是复用错误条。
+
 ## ⚠️ 先分清两个完全不同的动作
 
 **这是对接这个模块最容易出错的地方。**
@@ -135,7 +149,24 @@ async function resume(runId) {
 
 ---
 
-### 3. 同意 / 拒绝副作用操作
+### ⚠️ 重连 / 继续都会**从头重放**本运行的事件——事件处理必须幂等
+
+重建流时**若不带 `lastEventId`**，后端会补发本运行**全部**已持久化事件（`run_start`、`tool_call`、`tool_result`，
+甚至**上一次留下的 `interrupt`**）。所以：
+
+- **`tool_call` / `tool_result` 按 `stepId` 去重**：同一个 `stepId` 只保留一条工具活动，后到的 `tool_result` 更新它（否则工具轨迹会翻倍）。
+- **`run_start` 收到第二次是正常的**（继续 = 一次、重连 = 又一次），不要因此重置已渲染的内容。
+- **`message_delta` 不会被重放**（它不落库），所以文本不会重复追加；重连后当前文本由 `message_snapshot` **替换**。
+- **`message_snapshot` 的 `messageId` 可能为 `null`**（重连时助手消息还没落库）——别依赖它。
+- ⚠️ **不要用「流里出现过 `interrupt`」判断当前是否挂起**：重放里可能夹着**过期的** `interrupt`。
+  **当前状态一律以 `GET /api/agent/run/{runId}` 的 `status` 为准**，流里的历史事件只用来重建展示。
+
+---
+
+### 3. 同意 / 拒绝副作用操作（⬜ **未实现，属 M10——先别做**）
+
+> 后端目前**没有** `approve` 接口，也不会产生 `interruptType = APPROVAL_REQUIRED`、`pendingTool` 恒为 `null`。
+> 下面这段是 M10 的设计，留作预告；现在接入只会拿到 404。
 
 ```
 POST /api/agent/run/{runId}/approve
@@ -178,7 +209,7 @@ GET /api/agent/run/{runId}
 
 ---
 
-### 5. 查询执行链（可选，用于展示「它干了什么」）
+### 5. 查询执行链（⬜ **未实现，暂不可用**）
 
 ```
 GET /api/agent/run/{runId}/steps
@@ -206,7 +237,7 @@ interface AgentStepVO {
 
 **`replayed` 字段**：`true` 表示这一步的结果是**从中断点恢复时直接读出来的**，没有重新执行。界面上可以标注「已恢复」——这既解释了为什么这次没花时间，也证明了系统没有重复执行副作用。
 
-### 6. 查询会话下的运行列表（可选）
+### 6. 查询会话下的运行列表（⬜ **未实现，暂不可用**）
 
 ```
 GET /api/agent/run/list?conversationId=7&current=1&pageSize=20
