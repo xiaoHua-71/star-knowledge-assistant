@@ -1,6 +1,9 @@
 # agent · 中断与恢复
 
-> ⬜ **状态：设计已定稿，接口尚未实现。**
+> ✅ **状态：已实现（2026-10-16，M9）。** 停止（`POST /agent/run/{id}/interrupt`）、继续（`.../resume`）、
+> 查询（`GET /agent/run/{id}`）、重连（`GET /agent/run/{id}/stream?lastEventId=`）均可用。
+> ⬜ **未实现（属 M10）**：人工确认（`approve` 接口、`WAITING_APPROVAL`、`pendingTool`；当前 `pendingTool` 恒 `null`）、
+> 执行链查询 `GET .../steps`、运行列表 `GET .../run/list`。
 
 这是这个项目最有特色的功能：**回答生成到一半可以停下来，之后接着继续。** 内部实现见 [knowledge/12-中断与恢复的状态机](../knowledge/12-中断与恢复的状态机.md)；这里只讲前端怎么用。
 

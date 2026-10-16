@@ -1,6 +1,8 @@
 # 流式输出 SSE
 
-> 状态：M6「最小版」已实现（2026-10-12）；**M7 接入工具事件（2026-10-14）**——循环产出的 `tool_call` / `tool_result` 已能推送，且**自动检索已移除、检索改为工具**（见 [30-工具调用](30-工具调用.md)）。断线回放 / 中断 / `agent_event` 持久化仍未做（属 M8）。
+> 状态：M6「最小版」已实现（2026-10-12）；**M7 接入工具事件（2026-10-14）**；**M8 事件持久化（2026-10-14）**；
+> **M9 中断 / 续跑 / 断线重连 + `message_snapshot` 已实现（2026-10-16）**——`GET /api/agent/run/{runId}/stream?lastEventId=`
+> 补发漏掉的里程碑事件 + 发当前部分文本快照（替换语义）+ （运行还在跑时）接回实时推送。见 [12](12-中断与恢复的状态机.md) ⑦。
 > 前端契约见 [frontend/02-SSE协议规范](../frontend/02-SSE协议规范.md) 与 [frontend/30-chat](../frontend/30-chat-对话与流式.md)。
 
 ## ① 这个模块治的是哪类病（通用问题定义）
@@ -98,9 +100,11 @@ data:<单行 JSON>
 | `tool_call` | `stepId`, `toolCallId`, `toolName`, `arguments`, `sideEffect` | 一轮里模型点名工具时；在执行**之前**发（M7） |
 | `tool_result` | `stepId`, `toolCallId`, `success`, `elapsedMs`, `result`, `truncated` | 该工具执行完（M7） |
 | `run_end` | `runId`, `status`, `messageId`, `elapsedMs`, `rounds` | 正常结束；`messageId` = 助手消息 id |
+| `interrupt` | `runId`, `status`, `interruptType` | 运行挂起（M9）；`status` = `SUSPENDED` |
+| `message_snapshot` | `messageId`(可空), `text` | 断线重连补发的**当前全文**（**替换**语义，不是追加，M9） |
 | `error` | `code`, `message`, `runId`, `retryable` | 流已建立后失败；协议里唯一带 `code` 的事件 |
 
-**未实现**：`message_snapshot`（重连才用）、`ping`（心跳）、`todo_update`（计划）、`interrupt`（属中断模块）。
+**未实现**：`ping`（心跳）、`todo_update`（计划，属 M10）。
 
 ### 时序
 
@@ -126,10 +130,10 @@ data:<单行 JSON>
 
 ### 没做什么
 
-- **断线回放 / 重连**（`GET /agent/run/{runId}/stream`）、**中断 / 续跑**——属 M9。（**事件持久化已在 M8 落地**：里程碑事件写入 `agent_event`。）
-- `message_snapshot`、`ping` 心跳、`todo_update` 未实现。
+- **断线回放 / 重连**（`GET /agent/run/{runId}/stream`）、**中断 / 续跑**——**M9 已落地**（见 [12](12-中断与恢复的状态机.md) ⑦）。
+- `ping` 心跳、`todo_update` 未实现。
 - **检索已从「自动」改为「工具」**（M7，2026-10-14，见 [30](30-工具调用.md) 3.3）：不再在 `run_start` 之前同步检索；检索发生在循环里、由模型调用 `searchKnowledge` 触发，因此 `run_start` 不再被检索推迟。
-- **里程碑事件**的 `id` 是 `agent_event.id`（数据库自增，可比较、可续传）；**`message_delta` 不带 `id`**。重连接口尚未实现（M9），前端目前不依赖这些 id。
+- **里程碑事件**的 `id` 是 `agent_event.id`（数据库自增，可比较、可续传）；**`message_delta` 不带 `id`**。重连接口 M9 已实现（`GET /agent/run/{runId}/stream?lastEventId=`），前端应把**最后一个里程碑事件的 id** 作为重连游标。
 
 ### 坑 1：建流失败回 JSON 会撞 406（已踩，已规避）
 
@@ -144,9 +148,11 @@ data:<单行 JSON>
 - **原因**：把 `message_snapshot`（全量快照）当成 delta 追加。
 - **规避**：`message_delta` 追加、`message_snapshot` 替换。当前未实现 snapshot（无重连），将来实现时务必按此语义。
 
-### 坑 3（设计预告，未实现）：delta 不落库 ⇒ 重连靠 snapshot 补偿
+### 坑 3（M9 已实现）：delta 不落库 ⇒ 重连靠 snapshot 补偿
 
-逐 token 的 delta **不写** `agent_event`（否则 500 token = 500 行，纯粹冗余；完整文本已在 `conversation_message.content`）。代价是重连**补不出漏掉的 delta**——所以重连流程是：先补 `id > lastEventId` 的里程碑事件 → 再发一条 `message_snapshot`（当前已生成的部分文本）→ 然后继续推 delta。见 [frontend/02](../frontend/02-SSE协议规范.md)、[12-中断与恢复的状态机](12-中断与恢复的状态机.md)。
+逐 token 的 delta **不写** `agent_event`（否则 500 token = 500 行，纯粹冗余；完整文本已在 `conversation_message.content`）。代价是重连**补不出漏掉的 delta**——所以重连流程是：先补 `id > lastEventId` 的里程碑事件 → 再发一条 `message_snapshot`（当前已生成的部分文本）→ 然后继续推 delta。见 [frontend/02](../frontend/02-SSE协议规范.md)、[12-中断与恢复的状态机](12-中断与恢复的状态机.md) ⑦。
+
+实现落在 `agent/AgentStreamHub`：每 runId 一个通道，**delta 累积在内存缓冲**里（不落库），重连时把缓冲当快照发出去；里程碑事件仍以「先落库、再用其自增 id 推」保证补发可对齐。补发在**锁内**完成、并按每 emitter 的 `lastSentId` 游标去重 → **不重不漏**。
 
 ### 坑 4（M7 已消解）：早先「自动检索」会把首字节推迟
 

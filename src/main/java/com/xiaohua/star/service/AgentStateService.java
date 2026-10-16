@@ -1,7 +1,13 @@
 package com.xiaohua.star.service;
 
+import com.xiaohua.star.model.entity.AgentEvent;
+import com.xiaohua.star.model.entity.AgentRun;
+import com.xiaohua.star.model.entity.AgentStep;
 import com.xiaohua.star.model.enums.AgentEventTypeEnum;
 import com.xiaohua.star.model.enums.AgentStepStatusEnum;
+import com.xiaohua.star.model.enums.InterruptTypeEnum;
+
+import java.util.List;
 
 /**
  * Agent 运行状态的持久化门面（M8）。见 knowledge/12-中断与恢复的状态机.md。
@@ -44,6 +50,34 @@ public interface AgentStateService {
 
     /** 运行失败：FAILED + errorMsg + endTime。 */
     void failRun(long runId, String errorMsg);
+
+    /** 运行挂起：RUNNING/PENDING → SUSPENDED + interruptType（M9）。 */
+    void suspendRun(long runId, InterruptTypeEnum interruptType);
+
+    /**
+     * 运行续跑：条件更新 {@code SUSPENDED → RUNNING} 且清空 {@code interruptType}（M9）。
+     *
+     * @return true = 本次真的翻转过（防「双击继续」「并发续跑」重复起循环）
+     */
+    boolean resumeRun(long runId);
+
+    /** 取运行（不存在返回 {@code null}）。 */
+    AgentRun getRun(long runId);
+
+    /** 运行的全部步骤，按 {@code seq} 升序（重放顺序）。 */
+    List<AgentStep> listSteps(long runId);
+
+    /** 该运行 {@code id > lastEventId} 的事件，按 {@code id} 升序（断线补发用）。 */
+    List<AgentEvent> listEventsAfter(long runId, long lastEventId);
+
+    /** 把某步骤标为「结果来自重放」（续跑时重放已完成工具）。 */
+    void markReplayed(long stepId);
+
+    /**
+     * 该会话当前正在跑的运行 id（PENDING/RUNNING），无则 {@code null}。
+     * 用于「用户在运行中又发新消息」时给旧运行置 {@code NEW_MESSAGE} 中断标志。
+     */
+    Long findActiveRunId(Long conversationId);
 
     /**
      * 启动扫描（knowledge/12 坑 6）：

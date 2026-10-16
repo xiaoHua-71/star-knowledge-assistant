@@ -1,6 +1,10 @@
 # SSE 协议规范（流式对话）
 
-> 🟡 **状态：M6「最小版」实现了 `run_start` / `message_delta` / `run_end` / `error`（2026-10-12）；M7 追加 `tool_call` / `tool_result`（2026-10-14）；**M8 落地事件持久化（2026-10-14）——里程碑事件写入 `agent_event`、其自增 id 即 SSE 的 `id`，`runId` 变真实值；`message_delta` 不落库、不带 `id`。** 重连补发（`GET /agent/run/{runId}/stream`）、`interrupt` / 续跑仍未实现（属 M9）。**
+> ✅ **状态（2026-10-16，M9 完成）：** `run_start` / `message_delta` / `tool_call` / `tool_result` / `run_end` / `error` 已实现；
+> **M8** 落地事件持久化（里程碑事件写入 `agent_event`、其自增 id 即 SSE 的 `id`，`message_delta` 不落库、不带 `id`）；
+> **M9** 落地 `interrupt`（挂起）、`message_snapshot`（重连全文替换）、重连补发（`GET /agent/run/{runId}/stream?lastEventId=`）、
+> 停止（`POST /agent/run/{runId}/interrupt`）与续跑（`POST /agent/run/{runId}/resume`）。见 [40-agent-中断与恢复](40-agent-中断与恢复.md)、[knowledge/12](../knowledge/12-中断与恢复的状态机.md) ⑦。
+> 人工确认（`WAITING_APPROVAL` / `approve`）仍未实现，属 M10。**
 
 ## 一、为什么是 SSE，不是 WebSocket
 

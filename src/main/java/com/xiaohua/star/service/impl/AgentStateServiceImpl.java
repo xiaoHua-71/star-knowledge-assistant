@@ -198,6 +198,65 @@ public class AgentStateServiceImpl implements AgentStateService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void suspendRun(long runId, InterruptTypeEnum interruptType) {
+        agentRunMapper.update(null, new LambdaUpdateWrapper<AgentRun>()
+                .eq(AgentRun::getId, runId)
+                .in(AgentRun::getStatus, AgentRunStatusEnum.PENDING.name(), AgentRunStatusEnum.RUNNING.name())
+                .set(AgentRun::getStatus, AgentRunStatusEnum.SUSPENDED.name())
+                .set(AgentRun::getInterruptType, interruptType.name()));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean resumeRun(long runId) {
+        int rows = agentRunMapper.update(null, new LambdaUpdateWrapper<AgentRun>()
+                .eq(AgentRun::getId, runId)
+                .eq(AgentRun::getStatus, AgentRunStatusEnum.SUSPENDED.name())
+                .set(AgentRun::getStatus, AgentRunStatusEnum.RUNNING.name())
+                .set(AgentRun::getInterruptType, null));
+        return rows > 0;
+    }
+
+    @Override
+    public AgentRun getRun(long runId) {
+        return agentRunMapper.selectById(runId);
+    }
+
+    @Override
+    public List<AgentStep> listSteps(long runId) {
+        return agentStepMapper.selectList(new LambdaQueryWrapper<AgentStep>()
+                .eq(AgentStep::getRunId, runId)
+                .orderByAsc(AgentStep::getSeq));
+    }
+
+    @Override
+    public List<AgentEvent> listEventsAfter(long runId, long lastEventId) {
+        return agentEventMapper.selectList(new LambdaQueryWrapper<AgentEvent>()
+                .eq(AgentEvent::getRunId, runId)
+                .gt(AgentEvent::getId, lastEventId)
+                .orderByAsc(AgentEvent::getId));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void markReplayed(long stepId) {
+        agentStepMapper.update(null, new LambdaUpdateWrapper<AgentStep>()
+                .eq(AgentStep::getId, stepId)
+                .set(AgentStep::getReplayed, 1));
+    }
+
+    @Override
+    public Long findActiveRunId(Long conversationId) {
+        List<AgentRun> list = agentRunMapper.selectList(new LambdaQueryWrapper<AgentRun>()
+                .eq(AgentRun::getConversationId, conversationId)
+                .in(AgentRun::getStatus, AgentRunStatusEnum.PENDING.name(), AgentRunStatusEnum.RUNNING.name())
+                .orderByDesc(AgentRun::getId)
+                .last("limit 1"));
+        return list.isEmpty() ? null : list.get(0).getId();
+    }
+
+    @Override
     public boolean hasActiveRun(Long conversationId) {
         Long count = agentRunMapper.selectCount(new LambdaQueryWrapper<AgentRun>()
                 .eq(AgentRun::getConversationId, conversationId)

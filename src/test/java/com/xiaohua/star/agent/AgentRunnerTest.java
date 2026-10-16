@@ -58,12 +58,13 @@ class AgentRunnerTest {
                 ChatResponse.builder().aiMessage(AiMessage.from("完成")).build());
 
         AgentRunner runner = runner(state, cms, new AgentToolRegistry(List.of(new RecordingTool(calls))), 8);
-        AgentRunner.RunResult result = runner.run(model, ctx(), 55L, prompt(), sink);
+        AgentRunner.RunResult result = runner.run(model, ctx(), RUN_ID, 55L, prompt(), sink);
 
         assertEquals(RUN_ID, result.runId());
         assertEquals("完成", result.finalText());
         assertEquals(2, result.rounds());
         assertFalse(result.maxRoundsHit());
+        assertFalse(result.suspended());
 
         // ★ 核心不变量：工具意图行必须先落库，再执行工具
         assertTrue(calls.indexOf("beginToolStep") < calls.indexOf("toolExec"),
@@ -86,7 +87,7 @@ class AgentRunnerTest {
         FakeModel model = new FakeModel(toolCallResponse("ping")); // 永远要求调工具
 
         AgentRunner runner = runner(state, cms, new AgentToolRegistry(List.of(new RecordingTool(calls))), 3);
-        AgentRunner.RunResult result = runner.run(model, ctx(), 55L, prompt(), new RecordingSink());
+        AgentRunner.RunResult result = runner.run(model, ctx(), RUN_ID, 55L, prompt(), new RecordingSink());
 
         assertTrue(result.maxRoundsHit());
         assertEquals(3, result.rounds());
@@ -101,7 +102,6 @@ class AgentRunnerTest {
 
     private static AgentStateService stateMock(List<String> calls) {
         AgentStateService state = mock(AgentStateService.class);
-        when(state.createRun(anyLong(), anyLong(), anyLong(), anyInt())).thenReturn(RUN_ID);
         AtomicLong eventId = new AtomicLong(9000);
         when(state.appendEvent(anyLong(), any(), any(), anyString()))
                 .thenAnswer(i -> eventId.incrementAndGet());
@@ -112,6 +112,13 @@ class AgentRunnerTest {
                     return 7L;
                 });
         return state;
+    }
+
+    /** 不触发中断的标志（{@code get} 恒 empty）。 */
+    static RunInterruptFlag noInterrupt() {
+        RunInterruptFlag flag = mock(RunInterruptFlag.class);
+        when(flag.get(anyLong())).thenReturn(java.util.Optional.empty());
+        return flag;
     }
 
     private static ConversationMessageService messageServiceMock() {
@@ -133,6 +140,7 @@ class AgentRunnerTest {
         ReflectionTestUtils.setField(runner, "conversationMessageService", cms);
         ReflectionTestUtils.setField(runner, "toolRegistry", registry);
         ReflectionTestUtils.setField(runner, "agentProperties", props);
+        ReflectionTestUtils.setField(runner, "interruptFlag", noInterrupt());
         return runner;
     }
 

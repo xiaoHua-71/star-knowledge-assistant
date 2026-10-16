@@ -2,14 +2,19 @@ package com.xiaohua.star.service.impl;
 
 import com.xiaohua.star.agent.AgentEventSink;
 import com.xiaohua.star.agent.AgentRunner;
+import com.xiaohua.star.agent.AgentStreamHub;
 import com.xiaohua.star.agent.RunContext;
+import com.xiaohua.star.agent.RunInterruptFlag;
 import com.xiaohua.star.ai.MemoryBuilder;
 import com.xiaohua.star.common.ErrorCode;
 import com.xiaohua.star.config.AgentExecutorConfig;
+import com.xiaohua.star.config.AgentProperties;
 import com.xiaohua.star.exception.BusinessException;
 import com.xiaohua.star.model.dto.conversation.ChatMessageRequest;
 import com.xiaohua.star.model.entity.Conversation;
 import com.xiaohua.star.model.entity.ConversationMessage;
+import com.xiaohua.star.model.enums.InterruptTypeEnum;
+import com.xiaohua.star.service.AgentStateService;
 import com.xiaohua.star.service.ChatStreamService;
 import com.xiaohua.star.service.ConversationMessageService;
 import com.xiaohua.star.service.ConversationService;
@@ -18,28 +23,24 @@ import dev.langchain4j.model.chat.StreamingChatModel;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 流式对话实现（M6 消息流 + M7 工具循环 + M8 状态落库）。见 frontend/02、frontend/30、knowledge/12。
+ * 流式对话实现（M6 消息流 + M7 工具循环 + M8 状态落库 + M9 中断/续跑接线）。
+ * 见 frontend/02、frontend/30、knowledge/12。
  *
- * <p>本类只做<b>接入与传输</b>：校验 / 会话归属 / 取模型 / 事务#1 落用户消息 / 重建 prompt / 建 SSE，
- * 然后把 {@link AgentRunner#run} 提交到 {@code agentExecutor}。**运行状态、事件、助手消息的落库全在
- * {@code AgentRunner}**，它通过 {@link AgentEventSink} 把事件推回这里——这里只负责转成 SSE。
+ * <p>本类只做<b>接入与传输</b>：校验 / 会话归属 / 取模型 / 落用户消息 / 重建 prompt /
+ * <b>创建 run</b> / 建 SSE 并登记进 {@link AgentStreamHub}，然后把 {@link AgentRunner#run} 提交到
+ * {@code agentExecutor}。**运行状态、事件、助手消息的落库、挂起/续跑全在 {@code AgentRunner}**；
+ * 传输走 hub（同一 runId 的活通道），断线重连由 {@code AgentRunService#reconnect} 接。
  *
- * <p>M8 起 {@code runId} 是真实的 {@code agent_run.id}（不再是占位 UUID），事件的 `id` 是
- * {@code agent_event.id}；`message_delta` 不落库、不带 `id`（重连靠 `message_snapshot`，属 M9）。
- *
- * <p><b>客户端断开后循环仍会跑完并落库</b>（只有推流被 sink 跳过）——取消逻辑属 M9。
+ * <p>M9 起 {@code createRun} 挪到这里（循环之前），因为 hub 的通道要以 {@code runId} 为键、
+ * 必须在提交循环前就登记好。
  */
 @Slf4j
 @Service
@@ -63,6 +64,18 @@ public class ChatStreamServiceImpl implements ChatStreamService {
 
     @Resource
     private AgentRunner agentRunner;
+
+    @Resource
+    private AgentStateService agentStateService;
+
+    @Resource
+    private AgentStreamHub agentStreamHub;
+
+    @Resource
+    private RunInterruptFlag interruptFlag;
+
+    @Resource
+    private AgentProperties agentProperties;
 
     @Resource(name = AgentExecutorConfig.AGENT_EXECUTOR)
     private Executor agentExecutor;
@@ -92,75 +105,48 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                     "对话模型未配置（缺少 ai.chat.api-key / DEEPSEEK_API_KEY），无法对话");
         }
 
-        // 4. 落用户消息（事务 #1）。tokenCount 记估算值。
+        // 4. 会话里若还有在跑的运行，先给它置 NEW_MESSAGE 中断标志（它在下个安全点挂起）
+        Long activeRunId = agentStateService.findActiveRunId(request.getConversationId());
+        if (activeRunId != null) {
+            interruptFlag.set(activeRunId, InterruptTypeEnum.NEW_MESSAGE);
+        }
+
+        // 5. 落用户消息（事务 #1）。tokenCount 记估算值。
         ConversationMessage userMsg = conversationMessageService.appendMessage(
                 request.getConversationId(), userId,
                 ConversationMessage.ROLE_USER, content, memoryBuilder.estimate(content));
 
-        // 5. 运行上下文：工具经 @ToolMemoryId 拿到它（userId / 会话 / 生效的知识库范围）
+        // 6. 运行上下文：工具经 @ToolMemoryId 拿到它（userId / 会话 / 生效的知识库范围）
         RunContext ctx = new RunContext(userId, request.getConversationId(),
                 resolveKbIds(request, conversation));
 
-        // 6. 重建 prompt（系统消息 + 预算内历史；末条即刚落的用户消息）
+        // 7. 重建 prompt（系统消息 + 预算内历史；末条即刚落的用户消息）
         List<ChatMessage> prompt = memoryBuilder.build(
                 request.getConversationId(), ChatServiceImpl.SYSTEM_PROMPT);
 
-        // 7. 建 emitter 与事件出口（loop 先 run，sink 只负责推 SSE；生命周期由本方法收尾）
+        // 8. 创建运行 + 建流并登记进 hub（循环之外先建好，通道以 runId 为键）
+        long runId = agentStateService.createRun(
+                request.getConversationId(), userId, userMsg.getId(), agentProperties.getMaxRounds());
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
-        AtomicBoolean clientGone = new AtomicBoolean(false);
+        emitter.onTimeout(() -> log.warn("SSE 超时未结束: conversationId={}, runId={}", request.getConversationId(), runId));
+        emitter.onError(t -> log.warn("SSE 异步错误: runId={}", runId, t));
+        emitter.onCompletion(() -> log.debug("SSE 完成: runId={}", runId));
+        agentStreamHub.create(runId, emitter);
+        AgentEventSink sink = agentStreamHub.sink(runId);
 
-        emitter.onTimeout(() -> log.warn("SSE 超时未结束: conversationId={}", request.getConversationId()));
-        emitter.onError(t -> log.warn("SSE 异步错误: conversationId={}", request.getConversationId(), t));
-        emitter.onCompletion(() -> log.debug("SSE 完成: conversationId={}", request.getConversationId()));
-
-        AgentEventSink sink = new AgentEventSink() {
-            @Override
-            public void onEvent(long eventId, String eventName, Object data) {
-                send(emitter, clientGone, eventId, eventName, data);
-            }
-
-            @Override
-            public void onDelta(String delta) {
-                send(emitter, clientGone, null, "message_delta", Map.of("delta", delta));
-            }
-        };
-
-        // 8. 跑落库循环（提交到 agentExecutor，请求线程立即释放）
+        // 9. 跑落库循环（提交到 agentExecutor，请求线程立即释放）；收尾由 hub 完成 emitter
         agentExecutor.execute(() -> {
             try {
-                agentRunner.run(model, ctx, userMsg.getId(), prompt, sink);
+                agentRunner.run(model, ctx, runId, userMsg.getId(), prompt, sink);
             } catch (Exception e) {
                 // 错误事件已由 AgentRunner（经 sink）推给前端，这里只记日志
-                log.warn("Agent 运行失败: conversationId={}", request.getConversationId(), e);
+                log.warn("Agent 运行失败: runId={}", runId, e);
             } finally {
-                emitter.complete();
+                agentStreamHub.finish(runId);
             }
         });
 
         return emitter;
-    }
-
-    /**
-     * 发一个 SSE 事件。客户端已断则静默跳过；发送失败只置标志（循环不需要知道连接状态）。
-     *
-     * @param id 里程碑事件用 {@code agent_event.id}；{@code message_delta} 传 {@code null}（不落库、不可重放）
-     */
-    private void send(SseEmitter emitter, AtomicBoolean clientGone, Long id, String event, Object data) {
-        if (clientGone.get()) {
-            return;
-        }
-        try {
-            SseEmitter.SseEventBuilder builder = SseEmitter.event();
-            if (id != null) {
-                builder.id(String.valueOf(id));
-            }
-            builder.name(event).data(data, MediaType.APPLICATION_JSON);
-            emitter.send(builder.build());
-        } catch (IOException e) {
-            clientGone.set(true);
-        } catch (IllegalStateException ignored) {
-            // emitter 已完成：收尾竞态，忽略
-        }
     }
 
     /**
