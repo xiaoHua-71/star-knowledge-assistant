@@ -2,11 +2,13 @@ package com.xiaohua.star.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xiaohua.star.config.AgentProperties;
+import com.xiaohua.star.model.entity.AgentStep;
 import com.xiaohua.star.model.entity.ConversationMessage;
 import com.xiaohua.star.model.enums.AgentEventTypeEnum;
 import com.xiaohua.star.model.enums.AgentRunStatusEnum;
 import com.xiaohua.star.model.enums.AgentStepStatusEnum;
 import com.xiaohua.star.model.enums.InterruptTypeEnum;
+import com.xiaohua.star.model.vo.PendingToolVO;
 import com.xiaohua.star.service.AgentStateService;
 import com.xiaohua.star.service.ConversationMessageService;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -44,6 +46,11 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li>{@link #resume} 从调用方重建好的消息列表接着跑，轮次/序号/token 累计都续上。</li>
  * </ul>
  *
+ * <p><b>M10 人工确认</b>：碰到 {@code requireApproval} 工具时，先落意图行、发 {@code tool_call}，
+ * 然后挂到 {@code WAITING_APPROVAL} 并结束本轮（线程释放）；用户同意后由
+ * {@code AgentRunService#approve} 调 {@link #executeSideEffectTool} 执行恰好一次，再续跑。
+ * 副作用工具在执行前用 {@link IdempotencyKeys} 认领；撞键且结果未知时<b>绝不重跑</b>，转人工确认。
+ *
  * <p><b>循环仍是阻塞式</b>——必须跑在专用线程池 {@code agentExecutor} 上（一运行一线程）。
  * 客户端断开后循环仍会跑完或挂起（只有推流被 hub 跳过），挂起靠中断标志收敛。
  */
@@ -57,6 +64,14 @@ public class AgentRunner {
 
     /** 流式中断标志的轮询间隔（ms）：逐 token 查 Redis 太贵，节流到这个间隔。 */
     private static final long INTERRUPT_POLL_MS = 200L;
+
+    /** 撞幂等键且没有结果时的提示：结果未知，绝不自动重跑。 */
+    public static final String UNKNOWN_SIDE_EFFECT_WARNING =
+            "同参数的副作用操作上次执行结果未知（可能已经发生）。系统不会自动重跑，请先人工核实实际结果。";
+
+    /** 撞键时当前意图行不执行，作为工具结果回给模型。 */
+    public static final String SIDE_EFFECT_CONFLICT_TEXT =
+            "检测到同参数的副作用操作上次执行结果未知，本次未执行。请人工核实后重试。";
 
     /** 仅用于把事件体序列化进 agent_event、以及解析工具参数/结果；不需要全局的 Long→String 配置。 */
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -81,6 +96,18 @@ public class AgentRunner {
      */
     public record RunResult(long runId, String finalText, Long assistantMessageId,
                             int rounds, boolean maxRoundsHit, boolean suspended) {
+    }
+
+    /**
+     * 一次工具执行的结果（M10）。{@code needsApproval=true} 表示撞上了「结果未知」的幂等键，
+     * 必须转人工确认，<b>不能</b>自动重跑。
+     */
+    public record ToolExecutionOutcome(String resultText, boolean replayed, boolean needsApproval,
+                                       AgentStep pendingStep, String warning) {
+    }
+
+    /** 一批工具执行后的循环位置；{@code suspended=true} 时调用方应结束本轮运行。 */
+    private record ToolBatchOutcome(int seq, boolean suspended) {
     }
 
     /**
@@ -183,28 +210,10 @@ public class AgentRunner {
                     return finish(runId, ctx, text == null ? "" : text, totalIn, totalOut, round, startMs, false, sink);
                 }
 
-                // 逐个执行工具。安全点 2 的位置在「执行前」——先把意图行提交，再执行（knowledge/12 坑 1）
-                for (ToolExecutionRequest req : ai.toolExecutionRequests()) {
-                    seq++;
-                    boolean sideEffect = toolRegistry.sideEffect(req.name());
-                    long toolStepId = agentStateService.beginToolStep(runId, round, seq,
-                            req.id(), req.name(), req.arguments(), sideEffect, false);
-
-                    String stepId = str(toolStepId);
-                    String toolCallId = req.id() != null && !req.id().isBlank() ? req.id() : "step-" + seq;
-                    emit(sink, runId, ctx.conversationId(), AgentEventTypeEnum.TOOL_CALL,
-                            toolCallData(stepId, toolCallId, req.name(), req.arguments(), sideEffect));
-
-                    ToolRunResult result = toolRegistry.execute(req, ctx);
-                    String resultText = truncate(result.text());
-                    boolean truncated = !resultText.equals(result.text());
-                    agentStateService.finishToolStep(toolStepId, resultText, result.elapsedMs(),
-                            result.isError() ? AgentStepStatusEnum.FAILED : AgentStepStatusEnum.SUCCEEDED,
-                            result.isError() ? resultText : null);
-                    emit(sink, runId, ctx.conversationId(), AgentEventTypeEnum.TOOL_RESULT,
-                            toolResultData(stepId, toolCallId, !result.isError(), result.elapsedMs(), resultText, truncated));
-
-                    messages.add(ToolExecutionResultMessage.from(req, resultText));
+                ToolBatchOutcome batch = executeToolBatch(ctx, runId, round, seq, ai, messages, sink);
+                seq = batch.seq();
+                if (batch.suspended()) {
+                    return new RunResult(runId, "", null, 0, false, true);
                 }
             }
 
@@ -222,6 +231,199 @@ public class AgentRunner {
                             "runId", str(runId), "retryable", false));
             throw e instanceof RuntimeException re ? re : new IllegalStateException(e);
         }
+    }
+
+    /**
+     * 执行模型要求的一批工具（M10）。按顺序逐个处理：
+     * 先落意图行 → 发 {@code tool_call} → 需确认则挂起；否则认领幂等键并执行。
+     *
+     * <p><b>需人工确认时整批暂停</b>：当前及之后的工具都不执行，等用户 approve/reject 后
+     * 由 {@code AgentRunService#approve} 从这一批继续。
+     */
+    private ToolBatchOutcome executeToolBatch(RunContext ctx, long runId, int round, int seq,
+                                              AiMessage ai, List<ChatMessage> messages,
+                                              AgentEventSink sink) {
+        for (ToolExecutionRequest req : ai.toolExecutionRequests()) {
+            seq++;
+            boolean sideEffect = toolRegistry.sideEffect(req.name());
+            boolean requireApproval = toolRegistry.requireApproval(req.name());
+
+            // 铁律：意图行先提交，再执行（knowledge/12 坑 1）。幂等键在认领时写。
+            long stepId = agentStateService.beginToolStep(runId, round, seq,
+                    req.id(), req.name(), req.arguments(), sideEffect, requireApproval);
+            emit(sink, runId, ctx.conversationId(), AgentEventTypeEnum.TOOL_CALL,
+                    toolCallData(str(stepId), req.id(), req.name(), req.arguments(), sideEffect));
+
+            AgentStep step = toolStep(stepId, round, req);
+            if (requireApproval) {
+                suspendForApproval(runId, ctx.conversationId(), round, step, null, sink);
+                return new ToolBatchOutcome(0, true);
+            }
+
+            ToolExecutionOutcome out = sideEffect
+                    ? executeSideEffectTool(ctx, runId, step, req, sink)
+                    : executeAndRecord(ctx, runId, stepId, req, sink);
+
+            if (out.needsApproval()) {
+                // 撞键的是另一行时，当前意图行永远不会被执行，必须封掉；
+                // 否则它会被 findPendingApprovalStep 当成新的待确认项，形成确认死循环
+                if (out.pendingStep() != null && !out.pendingStep().getId().equals(step.getId())) {
+                    fillNotExecuted(step, SIDE_EFFECT_CONFLICT_TEXT, runId,
+                            ctx.conversationId(), sink);
+                }
+                suspendForApproval(runId, ctx.conversationId(), round,
+                        out.pendingStep(), out.warning(), sink);
+                return new ToolBatchOutcome(0, true);
+            }
+            messages.add(ToolExecutionResultMessage.from(req, out.resultText()));
+        }
+        return new ToolBatchOutcome(seq, false);
+    }
+
+    /**
+     * 执行一个副作用工具（M10）：幂等认领 → 三分支。调用方必须已经落好意图行，
+     * 且该工具已获得人工确认（或声明了 {@code idempotentBackend=true}）。
+     *
+     * <p>这是审批流程与主循环共用的执行入口。
+     */
+    public ToolExecutionOutcome executeSideEffectTool(RunContext ctx, long runId, AgentStep step,
+                                                      ToolExecutionRequest req, AgentEventSink sink) {
+        String key = IdempotencyKeys.of(runId, step.getStepNo(), step.getToolName(), step.getArgumentsJson());
+        AgentStateService.ClaimResult claim = agentStateService.claimToolStep(step.getId(), key);
+
+        if (claim == AgentStateService.ClaimResult.CLAIMED) {
+            return executeAndRecord(ctx, runId, step.getId(), req, sink);
+        }
+
+        // 三分支：撞键看已存在那行；非可认领看当前行
+        AgentStep existing = claim == AgentStateService.ClaimResult.KEY_CONFLICT
+                ? agentStateService.findStepByIdempotencyKey(key)
+                : agentStateService.getStep(step.getId());
+
+        if (existing != null && existing.getToolResultJson() != null) {
+            return replayResult(existing, step, req, runId, ctx, sink);
+        }
+        // 无结果：上次可能已经发出去了。既不能重放也不能重跑 → 转人工确认
+        return new ToolExecutionOutcome(null, false, true,
+                existing != null ? existing : step, UNKNOWN_SIDE_EFFECT_WARNING);
+    }
+
+    /** 撞键/已执行：把已有结果当作本次结果，**绝不重新发起调用**（knowledge/12 坑 3）。 */
+    private ToolExecutionOutcome replayResult(AgentStep existing, AgentStep currentStep,
+                                              ToolExecutionRequest req, long runId, RunContext ctx,
+                                              AgentEventSink sink) {
+        String text = existing.getToolResultJson();
+        boolean success = !AgentStepStatusEnum.FAILED.name().equals(existing.getStatus());
+
+        if (!existing.getId().equals(currentStep.getId())) {
+            // 撞键的是另一行：把同一结果回填到当前意图行，避免留下永远 PENDING 的孤儿步骤
+            AgentStepStatusEnum status = success
+                    ? AgentStepStatusEnum.SUCCEEDED : AgentStepStatusEnum.FAILED;
+            agentStateService.finishToolStep(currentStep.getId(), text, 0L, status,
+                    success ? null : text);
+            agentStateService.markReplayed(currentStep.getId());
+        } else {
+            agentStateService.markReplayed(existing.getId());
+        }
+
+        emitToolResult(sink, runId, ctx.conversationId(), currentStep.getId(), req.id(),
+                success, 0L, text, false);
+        log.info("副作用工具结果重放: runId={}, tool={}, stepId={}", runId, req.name(), currentStep.getId());
+        return new ToolExecutionOutcome(text, true, false, null, null);
+    }
+
+    /** 执行一个只读工具（审批流程里「后续只读调用」也用这个入口）。 */
+    public ToolExecutionOutcome executeReadOnlyTool(RunContext ctx, long runId, AgentStep step,
+                                                    ToolExecutionRequest req, AgentEventSink sink) {
+        return executeAndRecord(ctx, runId, step.getId(), req, sink);
+    }
+
+    /** 真正执行工具并回填结果（只读工具也走这里，只是没有幂等认领）。 */
+    private ToolExecutionOutcome executeAndRecord(RunContext ctx, long runId, long stepId,
+                                                  ToolExecutionRequest req, AgentEventSink sink) {
+        ToolRunResult result = toolRegistry.execute(req, ctx);
+        String resultText = truncate(result.text());
+        boolean truncated = !resultText.equals(result.text());
+        AgentStepStatusEnum status = result.isError()
+                ? AgentStepStatusEnum.FAILED : AgentStepStatusEnum.SUCCEEDED;
+
+        agentStateService.finishToolStep(stepId, resultText, result.elapsedMs(), status,
+                result.isError() ? resultText : null);
+        emitToolResult(sink, runId, ctx.conversationId(), stepId, req.id(),
+                !result.isError(), result.elapsedMs(), resultText, truncated);
+        return new ToolExecutionOutcome(resultText, false, false, null, null);
+    }
+
+    /**
+     * 挂到 {@code WAITING_APPROVAL} 并推 {@code interrupt(APPROVAL_REQUIRED)} 事件。
+     * 若状态已被并发改变（例如用户刚点了停止），改为按中断收敛。
+     *
+     * <p>公开给 {@code AgentRunService#approve}：审批后续批次里如果又撞上需确认的工具，
+     * 要复用同一套状态流转与事件体。
+     */
+    public void suspendForApproval(long runId, Long conversationId, int round,
+                                   AgentStep step, String warning, AgentEventSink sink) {
+        if (!agentStateService.markWaitingApproval(runId, round)) {
+            InterruptTypeEnum type = interruptFlag.get(runId).orElse(InterruptTypeEnum.USER_STOP);
+            agentStateService.suspendRun(runId, type);
+            interruptFlag.clear(runId);
+            emit(sink, runId, conversationId, AgentEventTypeEnum.INTERRUPT,
+                    Map.of("runId", str(runId), "status", AgentRunStatusEnum.SUSPENDED.name(),
+                            "interruptType", type.name()));
+            return;
+        }
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("runId", str(runId));
+        data.put("status", AgentRunStatusEnum.WAITING_APPROVAL.name());
+        data.put("interruptType", InterruptTypeEnum.APPROVAL_REQUIRED.name());
+        data.put("pendingTool", pendingToolData(step, warning));
+        emit(sink, runId, conversationId, AgentEventTypeEnum.INTERRUPT, data);
+
+        log.info("Agent 等待人工确认: runId={}, tool={}, stepId={}, warning={}",
+                runId, step.getToolName(), step.getId(), warning);
+    }
+
+    /** pendingTool 的事件体（stepId 按契约转字符串）。 */
+    private Map<String, Object> pendingToolData(AgentStep step, String warning) {
+        PendingToolVO vo = toolRegistry.pendingTool(step, warning);
+        Map<String, Object> d = new LinkedHashMap<>();
+        d.put("stepId", str(step.getId()));
+        d.put("toolName", vo.getToolName());
+        d.put("toolDisplayName", vo.getToolDisplayName());
+        d.put("toolDescription", vo.getToolDescription());
+        d.put("arguments", vo.getArguments());
+        if (warning != null) {
+            d.put("warning", warning);
+        }
+        return d;
+    }
+
+    /** 一行永远不会执行的意图：写入「未执行」结果，保证本轮可重放（不留孤儿 tool_call）。 */
+    private void fillNotExecuted(AgentStep step, String text, long runId, Long conversationId,
+                                 AgentEventSink sink) {
+        agentStateService.finishToolStep(step.getId(), text, 0L,
+                AgentStepStatusEnum.FAILED, null);
+        emitToolResult(sink, runId, conversationId, step.getId(), step.getToolCallId(),
+                false, 0L, text, false);
+    }
+
+    private void emitToolResult(AgentEventSink sink, long runId, Long conversationId, long stepId,
+                                String toolCallId, boolean success, long elapsedMs,
+                                String text, boolean truncated) {
+        emit(sink, runId, conversationId, AgentEventTypeEnum.TOOL_RESULT,
+                toolResultData(str(stepId), toolCallId, success, elapsedMs, text, truncated));
+    }
+
+    /** 轻量构造步骤视图：调用方刚插入意图行后使用，避免为了拿 stepNo/参数再查一次库。 */
+    private static AgentStep toolStep(long stepId, int round, ToolExecutionRequest req) {
+        AgentStep step = new AgentStep();
+        step.setId(stepId);
+        step.setStepNo(round);
+        step.setToolCallId(req.id());
+        step.setToolName(req.name());
+        step.setArgumentsJson(req.arguments());
+        return step;
     }
 
     /** 正常收尾：落助手消息 → 收尾 run → 发 run_end 事件。 */
@@ -347,8 +549,8 @@ public class AgentRunner {
 
     // ---------------- 事件体（id 一律转成字符串，与前端契约一致） ----------------
 
-    private static Map<String, Object> toolCallData(String stepId, String toolCallId, String toolName,
-                                                    String argumentsJson, boolean sideEffect) {
+    public static Map<String, Object> toolCallData(String stepId, String toolCallId, String toolName,
+                                                   String argumentsJson, boolean sideEffect) {
         Map<String, Object> d = new LinkedHashMap<>();
         d.put("stepId", stepId);
         d.put("toolCallId", toolCallId);
@@ -358,8 +560,8 @@ public class AgentRunner {
         return d;
     }
 
-    private static Map<String, Object> toolResultData(String stepId, String toolCallId, boolean success,
-                                                      long elapsedMs, String resultText, boolean truncated) {
+    public static Map<String, Object> toolResultData(String stepId, String toolCallId, boolean success,
+                                                     long elapsedMs, String resultText, boolean truncated) {
         Map<String, Object> d = new LinkedHashMap<>();
         d.put("stepId", stepId);
         d.put("toolCallId", toolCallId);

@@ -1,10 +1,12 @@
 # SSE 协议规范（流式对话）
 
-> ✅ **状态（2026-10-16，M9 完成）：** `run_start` / `message_delta` / `tool_call` / `tool_result` / `run_end` / `error` 已实现；
+> ✅ **状态（2026-10-20，M10 完成）：** `run_start` / `message_delta` / `tool_call` / `tool_result` / `run_end` / `error` 已实现；
 > **M8** 落地事件持久化（里程碑事件写入 `agent_event`、其自增 id 即 SSE 的 `id`，`message_delta` 不落库、不带 `id`）；
 > **M9** 落地 `interrupt`（挂起）、`message_snapshot`（重连全文替换）、重连补发（`GET /agent/run/{runId}/stream?lastEventId=`）、
-> 停止（`POST /agent/run/{runId}/interrupt`）与续跑（`POST /agent/run/{runId}/resume`）。见 [40-agent-中断与恢复](40-agent-中断与恢复.md)、[knowledge/12](../knowledge/12-中断与恢复的状态机.md) ⑦。
-> 人工确认（`WAITING_APPROVAL` / `approve`）仍未实现，属 M10。**
+> 停止（`POST /agent/run/{runId}/interrupt`）与续跑（`POST /agent/run/{runId}/resume`）；
+> **M10** 落地人工确认：`interrupt` 新增 `interruptType=APPROVAL_REQUIRED` + `pendingTool`，
+> 同意/拒绝走 `POST /agent/run/{runId}/approve`。见 [40-agent-中断与恢复](40-agent-中断与恢复.md)、
+> [knowledge/12](../knowledge/12-中断与恢复的状态机.md) ⑦⑧。**
 
 ## 一、为什么是 SSE，不是 WebSocket
 

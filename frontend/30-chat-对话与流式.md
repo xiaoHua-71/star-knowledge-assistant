@@ -1,6 +1,6 @@
 # chat · 对话与流式
 
-> ✅ **状态：`POST /chat/message`（非流式）M4；`POST /chat/stream`（流式）M6「最小版」+ M7 工具调用循环（检索改为「工具」）+ **M8 运行状态落库** 均已实现（见文末「落地记录」）。断线回放 / 中断 / 续跑仍未实现（属 M9）。**
+> ✅ **状态：`POST /chat/message`（非流式）M4；`POST /chat/stream`（流式）M6「最小版」+ M7 工具调用循环（检索改为「工具」）+ M8 运行状态落库 + **M9 断线回放/中断/续跑** + **M10 人工确认** 均已实现**（见 [40-agent](40-agent-中断与恢复.md) 与 [02-SSE协议规范](02-SSE协议规范.md)）。
 
 ## 这个模块只有一个核心接口
 
@@ -208,26 +208,24 @@ Content-Type: application/json
 | `run_end` | ✅ | `{runId, status:"COMPLETED", messageId, elapsedMs, rounds}` | **没有 `usage`**（token 用量未推）；M7 起新增 `elapsedMs` / `rounds` |
 | `error` | ✅ | `{code, message, runId, retryable}` | 一致（模型调用失败时推） |
 | `todo_update` | ❌ 未实现 | — | 无计划功能 |
-| `message_snapshot` | ❌ 未实现 | — | 事件已落库（M8），但重连接口未做，故本事件尚未推出（M9） |
-| `interrupt` | ❌ 未实现 | — | 也无 `interrupt` / `resume` / `approve` 接口 |
+| `message_snapshot` | ✅（M9） | `{messageId(可空), text}` | 重连补发的**当前全文**，**替换**语义 |
+| `interrupt` | ✅（M9/M10） | `{runId, status, interruptType, pendingTool?}` | M10 人工确认时 `status=WAITING_APPROVAL`、`interruptType=APPROVAL_REQUIRED` |
 | `ping` | ❌ 未实现 | — | 无心跳保活 |
 
 ### 前端当前「可以做」与「别做」
 
-**可以做**：发消息 → 逐字**追加**显示 → 收到 `run_end` 收尾（清「生成中」、刷新会话列表）→ 拉历史消息；以及渲染 `tool_call` / `tool_result`（如「正在检索知识库…」的进度提示，中文名用 `GET /tools/list` 映射）。这条主链路端到端可联调。
+**可以做**：发消息 → 逐字**追加**显示 → 收到 `run_end` 收尾（清「生成中」、刷新会话列表）→ 拉历史消息；渲染 `tool_call` / `tool_result`（中文名用 `GET /tools/list` 映射）；**停止 / 继续 / 断线重连 / 人工确认**（见 [40-agent](40-agent-中断与恢复.md)）。这条主链路端到端可联调。
 
-**别实现（依赖的事件 / 接口未落地，属 M9）**：
-- **停止 / 继续 / 人工确认**：无 `interrupt` 事件，也没有 `POST /agent/run/{runId}/interrupt|resume|approve`。
-- **断线重连**：里程碑事件的 `id` 已落库（续传的基础已就绪，M8），但 `GET /agent/run/{runId}/stream` 接口尚未实现（M9）。断线目前只能**重新拉历史消息**恢复界面。
+**别实现（依赖的事件 / 接口未落地）**：
 - **基于 `ping` 的心跳 / 连接存活判断**：无 `ping`。
-- **50001 并发护栏**：后端**没有**校验「该会话已有正在进行的运行」，同一会话连点两次发送不会拦——前端需自己在「生成中」**禁用发送按钮**。
+- **50001 并发护栏**：后端**没有**校验「同一会话连点两次发送」；第二次会启动新运行并把旧运行置 `NEW_MESSAGE` 挂起——前端仍应在「生成中」**禁用发送按钮**。
 - **规范化的引用来源事件**：`tool_result`（`toolName=searchKnowledge`）的 `result` 里已含检索片段/来源，可临时提取；专门的 `references` 事件仍未做。
 
 ### 其它取巧点 / 边界
 
 - 复用现有两段短事务（`ConversationMessageService#appendMessage`）与 `MemoryBuilder.build()` 的 `List<ChatMessage>`，直接喂已装配的 `streamingChatModel` Bean。
 - 建流前失败（40100 / 40000 / 40400 / 50001）必须回 **JSON 信封**而不是 event-stream —— 后端有个 406 陷阱，见 [02-SSE协议规范](02-SSE协议规范.md) 坑 2 的「后端实现注意」。
-- **已接入工具调用循环**（`kbIds` 语义仍生效，但检索改为 `searchKnowledge` 工具，见 §回答里可能带工具调用）；仍无中断 / 重连 / 续跑。
+- **已接入工具调用循环**（`kbIds` 语义仍生效，但检索改为 `searchKnowledge` 工具，见 §回答里可能带工具调用）；中断 / 重连 / 续跑 / 人工确认均已接入。
 - **前置条件**：环境变量 `DEEPSEEK_API_KEY` 必须设，否则 `streamingChatModel` Bean 不装配（`ChatModelConfig`），建流直接回 50001（模型未配置）。
 
 ## 前端类型定义（可直接复制）

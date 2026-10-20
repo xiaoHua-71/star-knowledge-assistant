@@ -92,6 +92,38 @@ class ResumePlannerTest {
     }
 
     @Test
+    void LLM请求了两个工具_只落了一个步骤_整轮丢弃() {
+        // M10：人工确认可能停在批次中间；不能因为「已存在的步骤都有结果」就误判整轮完整
+        String response = "{\"text\":null,\"toolCalls\":["
+                + "{\"id\":\"call_1\",\"name\":\"a\",\"arguments\":\"{}\"},"
+                + "{\"id\":\"call_2\",\"name\":\"b\",\"arguments\":\"{}\"}]}";
+        List<AgentStep> steps = List.of(
+                llm(1, 1, AgentStepStatusEnum.SUCCEEDED, response),
+                tool(1, 2, AgentStepStatusEnum.SUCCEEDED, "call_1", "a", "ok", 0));
+
+        ResumePlanner.Result r = ResumePlanner.reconstruct(BASE, steps);
+
+        assertEquals(0, r.roundsCompleted(), "缺失 call_2 的结果，整轮不完整");
+        assertEquals(BASE.size(), r.messages().size(), "不能重放出孤儿 tool_call");
+        assertFalse(r.danglingSideEffect());
+    }
+
+    @Test
+    void 同一轮残留旧工具步_只重放当前响应请求过的结果() {
+        // 崩溃后同一 stepNo 重新生成：旧尝试的 call_1 没结果，新响应的 call_2 有结果
+        List<AgentStep> steps = List.of(
+                llm(1, 1, AgentStepStatusEnum.SUCCEEDED, llmJson(null, "call_2", "ping", "{}")),
+                tool(1, 2, AgentStepStatusEnum.FAILED, "call_1", "oldTool", null, 0),
+                tool(1, 3, AgentStepStatusEnum.SUCCEEDED, "call_2", "ping", "pong", 0));
+
+        ResumePlanner.Result r = ResumePlanner.reconstruct(BASE, steps);
+
+        assertEquals(1, r.roundsCompleted());
+        assertEquals(List.of(3L), r.replayedStepIds(), "旧工具步不能被当成结果重放");
+        assertEquals(BASE.size() + 2, r.messages().size());
+    }
+
+    @Test
     void 副作用步无结果_标记为需人工确认() {
         List<AgentStep> steps = List.of(
                 llm(1, 1, AgentStepStatusEnum.SUCCEEDED, llmJson(null, "call_1", "createTicket", "{}")),

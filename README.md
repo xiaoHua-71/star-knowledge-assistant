@@ -11,7 +11,7 @@
 ![Vue](https://img.shields.io/badge/Frontend-Vue%203-42B883?logo=vuedotjs&logoColor=white)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)
 
-一句话：**一个能对话、能查自己的知识库、能调后端工具干活、崩溃重启也不丢审计链的 Agent。**
+一句话：**一个能对话、能查自己的知识库、能调后端工具干活、敢做危险操作前先问人、崩溃重启也不丢审计链的 Agent。**
 
 ---
 
@@ -46,6 +46,8 @@
 - `@Tool` 注解式工具注册，启动即校验契约；工具带**副作用分级**元数据
 - **ReAct 主循环** `LLM → 工具 → LLM …`，带 `maxRounds` 护栏与结果截断
 - 工具调用过程通过 SSE 实时可见：`tool_call` / `tool_result`
+- **危险操作先问人（M10）**：`createTicket` 这类副作用工具会挂到 `WAITING_APPROVAL`，
+  前端确认后才执行；幂等键 + 唯一索引保证「同意多少次都只执行一次」，结果未知时**绝不自动重跑**
 
 ### 💾 Agent 状态落库
 - 每次运行 = 一条 `agent_run`，每轮 LLM / 每次工具 = 一条 `agent_step`，里程碑事件 = `agent_event`
@@ -54,7 +56,8 @@
 
 ### ⚡ 流式输出（SSE）
 - `StreamingChatModel` → 事件表 → SSE，打字机效果
-- `run_start` / `message_delta` / `tool_call` / `tool_result` / `run_end` / `error` 一套协议
+- `run_start` / `message_delta` / `tool_call` / `tool_result` / `interrupt` / `run_end` / `error` 一套协议
+- **能停、能续、能重连**：停止后挂起，继续时从断点重放已完成的完整轮；断线重连带 `lastEventId` 补发事件
 - 建流失败优雅降级为 JSON 信封 40100 / 40000 / 40400
 
 ### 🎨 演示前端
@@ -189,6 +192,7 @@ JAVA_HOME=/e/Java/jdk-21.0.5 mvn spring-boot:run
 | **会话** | `POST /api/conversation/create` · `GET /api/conversation/list` · `GET /api/conversation/{id}/messages` · `POST /api/conversation/message/delete` |
 | **知识库** | `POST /api/kb/create` · `POST /api/kb/{kbId}/doc/upload` · `doc/url` · `POST /api/kb/{id}/rebuild` · `POST /api/kb/{id}/search` |
 | **工具** | `GET /api/tools/list`（当前可调用的工具及其参数） |
+| **Agent 运行** | `POST /api/agent/run/{id}/interrupt` · `resume` · `approve`（人工确认） · `GET /api/agent/run/{id}` · `GET /api/agent/run/{id}/stream` |
 
 > 完整契约见 [`frontend/`](frontend/00-索引与阅读顺序.md)。
 
@@ -200,13 +204,15 @@ JAVA_HOME=/e/Java/jdk-21.0.5 mvn spring-boot:run
 |---|---|---|---|
 | **Phase 1** | — | 骨架 + 用户模块，端到端跑通 | ✅ |
 | **Phase 2** | M0–M3 | RAG 从远端搬到本地，评测体系先立起来 | ✅ |
-| **Phase 3** | M4–M6 | 会话、记忆、流式——「能用起来」 | 🟡 M4 / M5 ✅，M6 最小版 ✅ |
-| **Phase 4** | M7–M10 | 工具调用 + 中断续跑——「像 Agent 了」 | 🟡 M7 ✅（只读工具）/ M8 ✅（状态落库）；M9–M10 待做 |
-| **Phase 5** | M11–M13 | 知识库管理、可观测性、前端联调——「能交付」 | 🟡 知识库管理已落地；可观测性 / 评测待做 |
+| **Phase 3** | M4–M6 | 会话、记忆、流式——「能用起来」 | ✅ |
+| **Phase 4** | M7–M10 | 工具调用 + 中断续跑——「像 Agent 了」 | ✅ M7 / M8 / M9 / M10 全部完成 |
+| **Phase 5** | M11–M13 | 知识库管理、可观测性、前端联调——「能交付」 | 🟡 M11 已随 RAG 完成；M12 可观测性 / M13 契约冻结待做 |
 
-**已落地**：RAG 全链路（混合检索 + RRF + 增量索引）、会话与消息、对话记忆、SSE 流式、只读工具调用、Agent 状态落库与启动恢复。
+**已落地**：RAG 全链路（混合检索 + RRF + 增量索引）、会话与消息、对话记忆、SSE 流式、工具调用、
+Agent 状态落库与启动恢复、**中断/续跑/断线重连、副作用工具人工确认与幂等执行**。
 
-**进行中 / 待做**：运行中断与续跑、副作用工具的人工确认、断线重连补发、可观测性、离线评测。
+**待做**：可观测性（`ai_call_log` / `/tools/logs`）、`GET /agent/run/{id}/steps`、运行列表、`ping` 心跳、
+超时封存、离线评测基线。
 
 ---
 

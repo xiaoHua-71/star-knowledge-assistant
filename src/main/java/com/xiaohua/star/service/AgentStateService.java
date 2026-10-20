@@ -21,6 +21,16 @@ import java.util.List;
  */
 public interface AgentStateService {
 
+    /** 幂等认领结果（M10）。见 knowledge/12 ④ 场景 B 的三分支。 */
+    enum ClaimResult {
+        /** 认领成功，调用方可以执行工具 */
+        CLAIMED,
+        /** 这一行已有结果（或状态已变），不要执行 */
+        NOT_CLAIMABLE,
+        /** 幂等键已被**另一行**占用——撞唯一键，调用方必须走三分支 */
+        KEY_CONFLICT
+    }
+
     /** 创建运行（PENDING），返回自增 id（即 {@code runId}）。 */
     long createRun(Long conversationId, Long userId, Long inputMessageId, int maxRounds);
 
@@ -37,9 +47,23 @@ public interface AgentStateService {
     void finishLlmStep(long stepId, String responseJson, long elapsedMs,
                        AgentStepStatusEnum status, String errorMsg);
 
-    /** 落一行工具意图（PENDING），**返回后调用方才执行工具**。 */
+    /** 落一行工具意图（PENDING），**返回后调用方才执行工具**。幂等键在执行前由 {@link #claimToolStep} 写入。 */
     long beginToolStep(long runId, int stepNo, int seq, String toolCallId, String toolName,
                        String argumentsJson, boolean sideEffect, boolean requireApproval);
+
+    /**
+     * 幂等认领：把「未认领且无结果」的步骤置为 RUNNING 并写入幂等键。
+     *
+     * <p>条件更新保证并发下只有一个请求能认领成功。撞 {@code uk_idempotencyKey} 时
+     * 返回 {@link ClaimResult#KEY_CONFLICT}，由调用方查 {@link #findStepByIdempotencyKey(String)} 走三分支。
+     */
+    ClaimResult claimToolStep(long stepId, String idempotencyKey);
+
+    /** 幂等键对应的步骤（撞键后用于三分支判定）；无则 {@code null}。 */
+    AgentStep findStepByIdempotencyKey(String idempotencyKey);
+
+    /** 按 id 取步骤；无则 {@code null}。 */
+    AgentStep getStep(long stepId);
 
     /** 回填工具结果到同一行。 */
     void finishToolStep(long stepId, String toolResultJson, long elapsedMs,
@@ -51,8 +75,23 @@ public interface AgentStateService {
     /** 运行失败：FAILED + errorMsg + endTime。 */
     void failRun(long runId, String errorMsg);
 
-    /** 运行挂起：RUNNING/PENDING → SUSPENDED + interruptType（M9）。 */
+    /** 运行挂起：PENDING/RUNNING/WAITING_APPROVAL → SUSPENDED + interruptType（M9/M10）。 */
     void suspendRun(long runId, InterruptTypeEnum interruptType);
+
+    /**
+     * 转人工确认：PENDING/RUNNING/SUSPENDED → WAITING_APPROVAL + APPROVAL_REQUIRED。
+     * 条件更新，返回是否真的翻转（可能已被停止/完成）。
+     */
+    boolean markWaitingApproval(long runId, int stepNo);
+
+    /** 用户同意：WAITING_APPROVAL → RUNNING，清空 interruptType。返回是否翻转（防双击）。 */
+    boolean approveRun(long runId);
+
+    /** 用户拒绝：WAITING_APPROVAL → SUSPENDED，清空 interruptType（后续由用户决定是否继续）。 */
+    boolean denyApproval(long runId);
+
+    /** 当前待确认的副作用步骤（最新一条、需确认、无结果）；无则 {@code null}。 */
+    AgentStep findPendingApprovalStep(long runId);
 
     /**
      * 运行续跑：条件更新 {@code SUSPENDED → RUNNING} 且清空 {@code interruptType}（M9）。

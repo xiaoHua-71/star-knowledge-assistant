@@ -3,8 +3,8 @@ package com.xiaohua.star.model.enums;
 /**
  * 一次运行的流转状态（{@code agent_run.status}）。见 knowledge/12-中断与恢复的状态机.md。
  *
- * <p>M8 只用到 {@link #PENDING} → {@link #RUNNING} → {@link #COMPLETED} / {@link #FAILED}，
- * 以及启动扫描写入的 {@link #SUSPENDED}；{@link #WAITING_APPROVAL} / {@link #CANCELLED} 属 M9/M10。
+ * <p>M9 用到 {@link #SUSPENDED}；M10 用到 {@link #WAITING_APPROVAL}（副作用工具待人工确认）。
+ * {@link #CANCELLED} 目前只保留给「超时封存」等后续功能。
  */
 public enum AgentRunStatusEnum {
 

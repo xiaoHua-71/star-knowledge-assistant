@@ -29,6 +29,9 @@ public class ToolInfoVO implements Serializable {
     /** 是否需人工确认（副作用工具通常为 true，但「幂等的副作用工具」可以 false） */
     private Boolean requireApproval;
 
+    /** 后端是否支持幂等键（M10）。见 knowledge/12 ③「工具契约」 */
+    private Boolean idempotentBackend;
+
     /** 参数清单（从工具 schema 派生）。无参工具为空列表 */
     private List<Param> parameters;
 

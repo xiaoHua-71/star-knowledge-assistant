@@ -1,8 +1,8 @@
 # tools · 工具
 
-> 🟡 **状态：`GET /tools/list` 已实现（M7，2026-10-14）——返回下方「真实响应」；`GET /tools/logs` 尚未实现**（依赖的 `agent_run`/`agent_step` 表已在 M8 建好，但该接口未做）。工具清单会随业务需求增长。
+> 🟡 **状态：`GET /tools/list` 已实现（M7，2026-10-14；M10 起含 `idempotentBackend` 与副作用工具）——返回下方「真实响应」；`GET /tools/logs` 尚未实现**。
 >
-> 当前**已上线**的工具：`getCurrentTime`、`searchKnowledge`，均为**只读**。`createTicket` 等**有副作用**工具属 M10，**目前不在清单里**。
+> 当前**已上线**的工具：`getCurrentTime`、`searchKnowledge`（只读），`createTicket`（**有副作用、需人工确认**，M10）。
 
 ## 工具是什么
 
@@ -15,7 +15,7 @@
 
 **工具的调用过程前端不用管**——它在流式事件里以 `tool_call` / `tool_result` 出现（见 [02-SSE协议规范](02-SSE协议规范.md)）。
 
-## 工具的两个属性（前端必须理解）
+## 工具的三种属性（前端必须理解）
 
 ### 1. 是否有副作用（`sideEffect`）
 
@@ -30,6 +30,15 @@
 
 **⚠️ 但不要假设「有副作用 = 一定需要确认」**：如果一个后端接口本身支持幂等（重复调用只会生效一次），它可以标记成「有副作用但不需要确认」。所以**判断依据永远是事件本身，不是你对工具属性的记忆**。
 
+### 3. 后端是否支持幂等键（`idempotentBackend`，M10 新增）
+
+| 值 | 含义 |
+|---|---|
+| `false` | 后端不支持幂等键。这种**副作用工具必须** `requireApproval=true`（启动时强制校验） |
+| `true` | 后端支持幂等键，重复调用不会产生第二次副作用；这种副作用工具可以不弹确认 |
+
+前端一般**不需要**根据它做分支——判断是否弹确认框只看 `requireApproval` / `interrupt` 事件。它主要用于展示工具能力说明。
+
 ## 接口
 
 ### 1. 工具清单
@@ -40,18 +49,31 @@ GET /api/tools/list
 
 响应：
 
-**真实响应（2026-10-14 实测，可直接对照）**：
+**真实响应（2026-10-20 实测，可直接对照；M10 起多一个 `idempotentBackend`）**：
 
 ```json
 {
   "code": 0,
   "data": [
     {
+      "name": "createTicket",
+      "displayName": "创建工单",
+      "description": "创建一个支持工单（会真正写入工单系统，属于有副作用的操作）。仅当用户明确要求建工单/提单/登记问题时调用。调用前应先向用户确认工单标题与处理人。",
+      "sideEffect": true,
+      "requireApproval": true,
+      "idempotentBackend": false,
+      "parameters": [
+        { "name": "title", "type": "string", "required": true, "description": "工单标题，简洁描述问题" },
+        { "name": "assignee", "type": "string", "required": true, "description": "处理人或处理组，例如 hr、it、finance" }
+      ]
+    },
+    {
       "name": "getCurrentTime",
       "displayName": "获取当前时间",
       "description": "获取当前的日期和时间。当问题涉及『现在』『今天』『几号』『几点』等需要当前时刻的信息时调用。",
       "sideEffect": false,
       "requireApproval": false,
+      "idempotentBackend": false,
       "parameters": []
     },
     {
@@ -60,6 +82,7 @@ GET /api/tools/list
       "description": "在用户当前会话关联的知识库中检索相关内容。当问题可能与用户上传的资料/知识库有关时，调用它来获取可引用的依据，再据此回答。",
       "sideEffect": false,
       "requireApproval": false,
+      "idempotentBackend": false,
       "parameters": [
         { "name": "query", "type": "string", "required": true, "description": "检索关键词或问题，用自然语言描述要查找的内容" }
       ]
@@ -69,11 +92,13 @@ GET /api/tools/list
 }
 ```
 
+> ⚠️ `createTicket` 的工单存在后端内存里，**服务重启即丢**——这是演示工具，不是真实工单系统。
+
 **字段说明**：
 
 - **需登录**：未登录返回 `{"code": 40100, ...}`（普通信封）。
 - `parameters` **总是存在**：无参工具是 `[]`，有参工具是数组（`type` 是 JSON schema 类型名 `string`/`integer`/`number`/`boolean`）。
-- `sideEffect` / `requireApproval` 是 `boolean`。
+- `sideEffect` / `requireApproval` / `idempotentBackend` 是 `boolean`。
 - 清单**按工具名排序**，顺序稳定。
 
 **用途**：

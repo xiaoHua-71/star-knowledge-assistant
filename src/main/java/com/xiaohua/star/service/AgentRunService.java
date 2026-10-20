@@ -17,6 +17,14 @@ public interface AgentRunService {
     /** 从挂起点继续执行；校验归属与状态、重建消息、把循环重新提交到线程池，返回新的运行状态。 */
     AgentRunVO resume(long runId, Long userId);
 
+    /**
+     * 人工确认（M10）：同意或拒绝一个需确认的副作用工具。
+     *
+     * <p>同意 → 执行<b>恰好一次</b>，然后继续运行；拒绝 → 把拒绝原因作为工具结果回给模型，
+     * 运行回到 {@code SUSPENDED}，由用户决定是否「继续」。
+     */
+    AgentRunVO approve(long runId, Long userId, boolean approve, String reason);
+
     /** 查询运行状态（归属校验）。 */
     AgentRunVO getRun(long runId, Long userId);
 

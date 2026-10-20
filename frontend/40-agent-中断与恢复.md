@@ -1,9 +1,7 @@
 # agent · 中断与恢复
 
-> ✅ **状态：已实现（2026-10-16，M9）。** 停止（`POST /agent/run/{id}/interrupt`）、继续（`.../resume`）、
-> 查询（`GET /agent/run/{id}`）、重连（`GET /agent/run/{id}/stream?lastEventId=`）均可用。
-> ⬜ **未实现（属 M10）**：人工确认（`approve` 接口、`WAITING_APPROVAL`、`pendingTool`；当前 `pendingTool` 恒 `null`）、
-> 执行链查询 `GET .../steps`、运行列表 `GET .../run/list`。
+> ✅ **已实现：停止 / 继续 / 查询 / 重连（2026-10-16，M9）；人工确认 `approve` + `WAITING_APPROVAL` + `pendingTool`（2026-10-20，M10）。**
+> ⬜ **仍未实现**：执行链查询 `GET .../steps`、运行列表 `GET .../run/list`。
 
 这是这个项目最有特色的功能：**回答生成到一半可以停下来，之后接着继续。** 内部实现见 [knowledge/12-中断与恢复的状态机](../knowledge/12-中断与恢复的状态机.md)；这里只讲前端怎么用。
 
@@ -20,6 +18,16 @@
 7. **读 `interruptType`**（`USER_STOP` / `SERVER_RESTART` / `NEW_MESSAGE`）区分文案（如「已停止」/「服务重启导致中断」/「已开始处理新消息」）。
 8. **类型补 `AgentRunVO`**（见下）。
 9. 现在把 `interrupt` 走 `error.value` 显示，观感突兀——建议改成独立的「已停止」状态条，而不是复用错误条。
+
+## ✅ M10 接入清单（人工确认）
+
+1. **识别审批中断**：`interrupt` 事件里 `interruptType === 'APPROVAL_REQUIRED'` → UI 进入 `awaitingApproval`，弹出确认框，内容取 `data.pendingTool`。
+2. **确认框展示**：优先用 `toolDisplayName`（中文名）；`toolDescription` 直接展示；`arguments` **原样、完整**展示（不要只显示标题）；`warning` 非空时用醒目样式展示。
+3. **点同意** → `POST /api/agent/run/{runId}/approve` body `{"approve": true}`；请求期间禁用按钮。返回后**立刻重连流** `GET /api/agent/run/{runId}/stream`（不带 `lastEventId`），不要等流自动恢复。
+4. **点拒绝** → 可选填原因（≤500 字），`{"approve": false, "reason": "..."}`；返回的 `status` 是 `SUSPENDED` → 切到「已停止 + 继续」状态。
+5. **刷新页面**：`GET /api/agent/run/{runId}`，若 `status === 'WAITING_APPROVAL'`，用返回的 `pendingTool` 重新弹出确认框。
+6. **错误处理**：`50001 运行状态已变化` 通常表示另一个标签页已经点过同意/拒绝——不要重试，重新 `GET` 一次运行状态即可。
+7. **不要用旧的 interrupt 事件判断当前状态**：重连会重放历史事件，当前状态一律以 `GET /agent/run/{runId}` 的 `status` 为准。
 
 ## ⚠️ 先分清两个完全不同的动作
 
@@ -63,8 +71,10 @@ interface AgentRunVO {
 interface PendingTool {
   stepId: string;
   toolName: string;
+  toolDisplayName?: string;      // 中文名（M10 新增；优先展示它，别直接显示 toolName）
   toolDescription: string;       // 工具的说明，可以直接展示给用户
-  arguments: Record<string, unknown>;  // 待执行的参数，展示给用户确认
+  arguments: Record<string, unknown>;  // 待执行的参数，**原样展示**
+  warning?: string | null;       // M10 新增：风险提示，非空时要显著展示
 }
 ```
 
@@ -78,7 +88,7 @@ interface PendingTool {
 | `WAITING_APPROVAL` | 等用户确认一个有副作用的操作 | 弹确认框，展示 `pendingTool` |
 | `COMPLETED` | 正常结束 | 正常展示回答 |
 | `FAILED` | 出错了 | 展示 `errorMsg` + 重试按钮 |
-| `CANCELLED` | 被放弃或超时回收 | 展示「已取消」 |
+| `CANCELLED` | 被放弃或超时回收 | 展示「已取消」（**后端暂未产生该状态**，超时封存未做） |
 
 ## 接口
 
@@ -163,10 +173,7 @@ async function resume(runId) {
 
 ---
 
-### 3. 同意 / 拒绝副作用操作（⬜ **未实现，属 M10——先别做**）
-
-> 后端目前**没有** `approve` 接口，也不会产生 `interruptType = APPROVAL_REQUIRED`、`pendingTool` 恒为 `null`。
-> 下面这段是 M10 的设计，留作预告；现在接入只会拿到 404。
+### 3. 同意 / 拒绝副作用操作（✅ **已实现，M10**）
 
 ```
 POST /api/agent/run/{runId}/approve
@@ -180,7 +187,7 @@ Content-Type: application/json
 
 响应：`data` 是 `AgentRunVO`
 
-**什么时候会用到**：收到 `interrupt` 事件且 `interruptType === 'APPROVAL_REQUIRED'` 时，`data.pendingTool` 里带着待执行的操作。模型想做一个**会改变系统状态的操作**（建工单、发通知、改数据），需要用户点头。
+**什么时候会用到**：收到 `interrupt` 事件且 `interruptType === 'APPROVAL_REQUIRED'` 时，`data.pendingTool` 里带着待执行的操作。模型想做一个**会改变系统状态的操作**（建工单、发通知、改数据），需要用户点头。也可以随时调 `GET /api/agent/run/{runId}`，`status === 'WAITING_APPROVAL'` 时 `pendingTool` 同样会返回（刷新页面后靠它恢复确认框）。
 
 **前端要展示什么**：
 
@@ -188,9 +195,17 @@ Content-Type: application/json
 - `pendingTool.toolDescription` —— 后端给的自然语言说明，可以直接展示
 - `pendingTool.arguments` —— **必须把参数原样展示给用户**，这是让用户判断「要不要点同意」的全部依据
 
-**⚠️ 拒绝之后的语义**：运行会回到 `SUSPENDED`，**不会**自动尝试别的办法。用户可以选择「继续」（让模型换个思路，但模型并不天然知道被拒绝了的原因——`reason` 会作为工具错误信息喂给模型，所以它能知道）或者放弃。
+**⚠️ 拒绝之后的语义**：运行会回到 `SUSPENDED`，**不会**自动尝试别的办法。用户可以选择「继续」（让模型换个思路，**`reason` 会作为工具错误结果回给模型，所以它知道为什么被拒**）或者放弃。后端会把同一批次里尚未执行的其它工具调用也一并标记为「未执行」，保证续跑时整轮可重放——前端不需要做任何补偿。
 
-**同意之后**：工具执行**恰好一次**。即使用户快速点了两次「同意」，后端也有幂等保护，不会重复创建。前端不需要做防抖（但做了也无害）。
+**同意之后**：
+
+1. `approve` 接口返回 `status = RUNNING`，但它只是**启动了**后续执行；
+2. **必须立刻重新接流** `GET /api/agent/run/{runId}/stream`（不带 `lastEventId` 即可，会从头补发）才能看到 `tool_result`、后续 `message_delta` 和 `run_end`；
+3. 工具执行**恰好一次**。即使用户快速点了两次「同意」，后端用条件更新 + 幂等键双重保护，第二次会返回 `50001 运行状态已变化`。前端仍建议在请求期间禁用按钮。
+
+**⚠️ `pendingTool.warning` 非空时**（例如「上次执行结果未知」）：用户点「同意」**只代表已知晓**，后端**不会重跑**那个操作，而是把「结果未知、未重复执行」写进工具结果。文案上不要写成「确认执行」，应写成「我已知晓 / 继续」。
+
+**等待确认时用户点「停止」**：后端直接把本批次未执行的调用写成「未执行」并挂起为 `SUSPENDED(USER_STOP)`；之后可以「继续」，模型会看到这些操作没执行。
 
 ---
 

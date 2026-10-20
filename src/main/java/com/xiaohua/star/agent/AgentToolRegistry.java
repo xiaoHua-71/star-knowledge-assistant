@@ -1,5 +1,8 @@
 package com.xiaohua.star.agent;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.xiaohua.star.model.entity.AgentStep;
+import com.xiaohua.star.model.vo.PendingToolVO;
 import com.xiaohua.star.model.vo.ToolInfoVO;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -47,6 +50,9 @@ import java.util.Map;
 @Component
 public class AgentToolRegistry {
 
+    /** 仅用于解析工具参数放进 pendingTool；不需要全局的 Long→String 配置。 */
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     /** 工具名 → 规范（发给模型的 schema） */
     private final Map<String, ToolSpecification> specByName = new LinkedHashMap<>();
 
@@ -84,6 +90,14 @@ public class AgentToolRegistry {
                             + "——没有它就没有 displayName / 副作用分级，前端无法正确展示，副作用治理也无从谈起");
         }
 
+        // M10 失败快原则：既不幂等、又不需确认的副作用工具，一旦在恢复时重跑就会重复下单/发通知
+        if (meta.sideEffect() && !meta.idempotentBackend() && !meta.requireApproval()) {
+            throw new IllegalStateException(
+                    "工具 '" + name + "'（" + method + "）配置不安全：sideEffect=true，但 "
+                            + "idempotentBackend=false 且 requireApproval=false。"
+                            + "副作用工具必须至少满足一项：后端支持幂等键，或执行前需人工确认");
+        }
+
         // @ToolMemoryId 参数会被注入 RunContext，类型不符会在运行期 ClassCastException；提前拦下
         for (Parameter p : method.getParameters()) {
             if (p.isAnnotationPresent(ToolMemoryId.class) && p.getType() != RunContext.class) {
@@ -113,6 +127,49 @@ public class AgentToolRegistry {
         return meta != null && meta.sideEffect();
     }
 
+    /** 是否需人工确认（未知工具按 false：它会在执行时返回「未知工具」错误）。 */
+    public boolean requireApproval(String toolName) {
+        ToolMeta meta = metaByName.get(toolName);
+        return meta != null && meta.requireApproval();
+    }
+
+    /** 工具元信息；未知工具返回 {@code null}。 */
+    public ToolMeta meta(String toolName) {
+        return metaByName.get(toolName);
+    }
+
+    /**
+     * 构造待确认工具视图（{@code pendingTool}）。参数解析失败也不抛异常——
+     * 确认框展示的是「坏掉的参数原文兜底」，不能因此拖垮运行。
+     */
+    public PendingToolVO pendingTool(AgentStep step, String warning) {
+        PendingToolVO vo = new PendingToolVO();
+        vo.setStepId(step.getId());
+        vo.setToolName(step.getToolName());
+        ToolMeta meta = metaByName.get(step.getToolName());
+        if (meta != null) {
+            vo.setToolDisplayName(meta.displayName());
+        }
+        ToolSpecification spec = specByName.get(step.getToolName());
+        if (spec != null) {
+            vo.setToolDescription(spec.description());
+        }
+        vo.setArguments(parseArguments(step.getArgumentsJson()));
+        vo.setWarning(warning);
+        return vo;
+    }
+
+    private static Object parseArguments(String argumentsJson) {
+        if (argumentsJson == null || argumentsJson.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return MAPPER.readValue(argumentsJson, Object.class);
+        } catch (Exception e) {
+            return Map.of("raw", argumentsJson);
+        }
+    }
+
     /** 工具清单（frontend/60 的 {@code GET /tools/list}）。按名字排序。 */
     public List<ToolInfoVO> toolInfos() {
         List<ToolInfoVO> list = new ArrayList<>(specByName.size());
@@ -124,6 +181,7 @@ public class AgentToolRegistry {
             vo.setDisplayName(meta.displayName());
             vo.setSideEffect(meta.sideEffect());
             vo.setRequireApproval(meta.requireApproval());
+            vo.setIdempotentBackend(meta.idempotentBackend());
             vo.setParameters(paramsOf(spec.parameters()));
             list.add(vo);
         }

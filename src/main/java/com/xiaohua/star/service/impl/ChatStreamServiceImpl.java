@@ -11,8 +11,10 @@ import com.xiaohua.star.config.AgentExecutorConfig;
 import com.xiaohua.star.config.AgentProperties;
 import com.xiaohua.star.exception.BusinessException;
 import com.xiaohua.star.model.dto.conversation.ChatMessageRequest;
+import com.xiaohua.star.model.entity.AgentRun;
 import com.xiaohua.star.model.entity.Conversation;
 import com.xiaohua.star.model.entity.ConversationMessage;
+import com.xiaohua.star.model.enums.AgentRunStatusEnum;
 import com.xiaohua.star.model.enums.InterruptTypeEnum;
 import com.xiaohua.star.service.AgentStateService;
 import com.xiaohua.star.service.ChatStreamService;
@@ -105,10 +107,17 @@ public class ChatStreamServiceImpl implements ChatStreamService {
                     "对话模型未配置（缺少 ai.chat.api-key / DEEPSEEK_API_KEY），无法对话");
         }
 
-        // 4. 会话里若还有在跑的运行，先给它置 NEW_MESSAGE 中断标志（它在下个安全点挂起）
+        // 4. 会话里若还有未结束的运行，先收敛它
         Long activeRunId = agentStateService.findActiveRunId(request.getConversationId());
         if (activeRunId != null) {
-            interruptFlag.set(activeRunId, InterruptTypeEnum.NEW_MESSAGE);
+            AgentRun active = agentStateService.getRun(activeRunId);
+            if (active != null && AgentRunStatusEnum.WAITING_APPROVAL.name().equals(active.getStatus())) {
+                // 用户不等确认了（直接发了新消息）：没有循环线程可读中断标志，直接挂起
+                agentStateService.suspendRun(activeRunId, InterruptTypeEnum.NEW_MESSAGE);
+            } else {
+                // 在跑的运行：登记标志，由它在下一个安全点自行挂起
+                interruptFlag.set(activeRunId, InterruptTypeEnum.NEW_MESSAGE);
+            }
         }
 
         // 5. 落用户消息（事务 #1）。tokenCount 记估算值。

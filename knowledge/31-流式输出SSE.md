@@ -3,6 +3,7 @@
 > 状态：M6「最小版」已实现（2026-10-12）；**M7 接入工具事件（2026-10-14）**；**M8 事件持久化（2026-10-14）**；
 > **M9 中断 / 续跑 / 断线重连 + `message_snapshot` 已实现（2026-10-16）**——`GET /api/agent/run/{runId}/stream?lastEventId=`
 > 补发漏掉的里程碑事件 + 发当前部分文本快照（替换语义）+ （运行还在跑时）接回实时推送。见 [12](12-中断与恢复的状态机.md) ⑦。
+> **M10 人工确认事件（2026-10-20）**：`interrupt(APPROVAL_REQUIRED, pendingTool)` + `POST .../approve`，见 [12](12-中断与恢复的状态机.md) ⑧。
 > 前端契约见 [frontend/02-SSE协议规范](../frontend/02-SSE协议规范.md) 与 [frontend/30-chat](../frontend/30-chat-对话与流式.md)。
 
 ## ① 这个模块治的是哪类病（通用问题定义）
@@ -66,11 +67,11 @@
 - **M7 起循环跑在专用线程池上**（`agentExecutor`）。M6 那条「控制器线程发 `run_start` 后 `model.chat(...)` 即返回、回调线程推 delta」的做法已被 **M7 的阻塞式 Agent 循环**取代（见 [30](30-工具调用.md) 3.6）：LC4j 的回调被 `CompletableFuture` 桥接成「一次调用阻塞到结束」，好把「LLM → 工具 → LLM」写成顺序代码。`SseEmitter` 的 `send`/`complete` 自带同步；`run_start` 仍在 `initialize()` 之前发送，会被缓冲并按序回放，顺序有保证。
 - **超时必须显式**：`new SseEmitter(300_000L)`。不传超时参数会退回容器默认（Tomcat ≈ 30s），长回答会被中途掐断。
 - **事件契约自研**，以 [frontend/02](../frontend/02-SSE协议规范.md) 为准（那是前端唯一的契约来源）。
-- **M6 是最小可用版；M8 起状态落库**：里程碑事件写入 `agent_event`、用其自增 id 当 SSE 的 `id`（`runId` 也是真实的 `agent_run.id`）；`message_delta` 仍不落库、**不带 `id`**。断线回放 / 中断 / 续跑仍属 M9（见 [12](12-中断与恢复的状态机.md) ⑥）。
+- **M6 是最小可用版；M8 起状态落库**：里程碑事件写入 `agent_event`、用其自增 id 当 SSE 的 `id`（`runId` 也是真实的 `agent_run.id`）；`message_delta` 仍不落库、**不带 `id`**。断线回放 / 中断 / 续跑已在 M9 落地，人工确认在 M10 落地（见 [12](12-中断与恢复的状态机.md) ⑦⑧）。
 
 **落地位置**：`service/ChatStreamService` + `service/impl/ChatStreamServiceImpl`；路由 `controller/ChatController#stream`。复用 `MemoryBuilder#build`（`List<ChatMessage>` 直接喂流式模型）与 `ConversationMessageService#appendMessage` 的两段短事务（模型调用在事务之外）。
 
-**关于 `runId`**：**M8 起是真实的 `agent_run.id`**（不再是占位 UUID）。前端目前只用它做「以后可能有的停止 / 继续」，而那两个接口属 M9，尚不存在。
+**关于 `runId`**：**M8 起是真实的 `agent_run.id`**（不再是占位 UUID）。M9 起前端用它调停止 / 继续 / 重连，M10 起还用于 `approve`。
 
 ---
 
@@ -100,11 +101,14 @@ data:<单行 JSON>
 | `tool_call` | `stepId`, `toolCallId`, `toolName`, `arguments`, `sideEffect` | 一轮里模型点名工具时；在执行**之前**发（M7） |
 | `tool_result` | `stepId`, `toolCallId`, `success`, `elapsedMs`, `result`, `truncated` | 该工具执行完（M7） |
 | `run_end` | `runId`, `status`, `messageId`, `elapsedMs`, `rounds` | 正常结束；`messageId` = 助手消息 id |
-| `interrupt` | `runId`, `status`, `interruptType` | 运行挂起（M9）；`status` = `SUSPENDED` |
+| `interrupt` | `runId`, `status`, `interruptType`, `pendingTool?` | 运行挂起（M9）；M10 起需人工确认时 `status=WAITING_APPROVAL`、`interruptType=APPROVAL_REQUIRED`、`pendingTool` 带待执行工具 |
 | `message_snapshot` | `messageId`(可空), `text` | 断线重连补发的**当前全文**（**替换**语义，不是追加，M9） |
 | `error` | `code`, `message`, `runId`, `retryable` | 流已建立后失败；协议里唯一带 `code` 的事件 |
 
-**未实现**：`ping`（心跳）、`todo_update`（计划，属 M10）。
+**未实现**：`ping`（心跳）、`todo_update`（计划功能本身未做）。
+
+**M10 人工确认的事件顺序**：`tool_call` → `interrupt(APPROVAL_REQUIRED, pendingTool)`（本轮结束、线程释放）
+→ 用户 `POST /agent/run/{id}/approve` → 前端重连流 → `tool_result`（执行结果 / 拒绝原因）→ 下一轮 `run_start` → … → `run_end`。
 
 ### 时序
 
@@ -131,6 +135,7 @@ data:<单行 JSON>
 ### 没做什么
 
 - **断线回放 / 重连**（`GET /agent/run/{runId}/stream`）、**中断 / 续跑**——**M9 已落地**（见 [12](12-中断与恢复的状态机.md) ⑦）。
+- **人工确认**（`interrupt(APPROVAL_REQUIRED)` + `POST /agent/run/{id}/approve`）——**M10 已落地**（见 ⑧）。
 - `ping` 心跳、`todo_update` 未实现。
 - **检索已从「自动」改为「工具」**（M7，2026-10-14，见 [30](30-工具调用.md) 3.3）：不再在 `run_start` 之前同步检索；检索发生在循环里、由模型调用 `searchKnowledge` 触发，因此 `run_start` 不再被检索推迟。
 - **里程碑事件**的 `id` 是 `agent_event.id`（数据库自增，可比较、可续传）；**`message_delta` 不带 `id`**。重连接口 M9 已实现（`GET /agent/run/{runId}/stream?lastEventId=`），前端应把**最后一个里程碑事件的 id** 作为重连游标。
@@ -146,7 +151,7 @@ data:<单行 JSON>
 
 - **现象**：重连后文本出现大段重复。
 - **原因**：把 `message_snapshot`（全量快照）当成 delta 追加。
-- **规避**：`message_delta` 追加、`message_snapshot` 替换。当前未实现 snapshot（无重连），将来实现时务必按此语义。
+- **规避**：`message_delta` 追加、`message_snapshot` 替换（M9 已按此语义实现）。
 
 ### 坑 3（M9 已实现）：delta 不落库 ⇒ 重连靠 snapshot 补偿
 

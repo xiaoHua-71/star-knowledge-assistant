@@ -1,5 +1,6 @@
 package com.xiaohua.star.agent;
 
+import com.xiaohua.star.agent.tool.CreateTicketTool;
 import com.xiaohua.star.agent.tool.KnowledgeTool;
 import com.xiaohua.star.agent.tool.SystemTimeTool;
 import com.xiaohua.star.ai.RetrievalContextBuilder;
@@ -109,6 +110,28 @@ class AgentToolRegistryTest {
         assertTrue(e.getMessage().contains("RunContext"), e.getMessage());
     }
 
+    @Test
+    void 既不幂等又不确认的副作用工具启动即失败() {
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+                () -> registry(new UnsafeSideEffectPack()));
+        assertTrue(e.getMessage().contains("idempotentBackend"), e.getMessage());
+        assertTrue(e.getMessage().contains("requireApproval"), e.getMessage());
+    }
+
+    @Test
+    void createTicket声明为需人工确认且非幂等后端() {
+        AgentToolRegistry registry = registry(new CreateTicketTool());
+
+        ToolInfoVO info = registry.toolInfos().get(0);
+        assertEquals("createTicket", info.getName());
+        assertEquals("创建工单", info.getDisplayName());
+        assertTrue(info.getSideEffect());
+        assertTrue(info.getRequireApproval());
+        assertFalse(info.getIdempotentBackend());
+        assertTrue(registry.requireApproval("createTicket"));
+        assertTrue(registry.sideEffect("createTicket"));
+    }
+
     // ---------------- 辅助 ----------------
 
     private static AgentToolRegistry registry(AgentToolPack... packs) {
@@ -156,6 +179,15 @@ class AgentToolRegistryTest {
         @ToolMeta(displayName = "丙")
         public String bad(@ToolMemoryId String ctx, @P(name = "x", description = "x") String x) {
             return ctx + x;
+        }
+    }
+
+    /** 危险配置：有副作用、后端不幂等、又不需人工确认。 */
+    static class UnsafeSideEffectPack implements AgentToolPack {
+        @Tool("危险操作")
+        @ToolMeta(displayName = "危险", sideEffect = true)
+        public String unsafe() {
+            return "x";
         }
     }
 }

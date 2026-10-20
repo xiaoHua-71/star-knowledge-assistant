@@ -67,14 +67,21 @@ public final class ResumePlanner {
                 danglingSideEffect = r.danglingSideEffect();
                 break;
             }
-            if (!r.toolRequests().isEmpty()) {
-                messages.add(AiMessage.from(r.text(), r.toolRequests()));
+            List<ToolExecutionRequest> reqs = r.toolRequests();
+            if (!reqs.isEmpty()) {
+                messages.add(AiMessage.from(r.text(), reqs));
+                // 只重放「当前 LLM 响应真正请求过」的工具结果：
+                // 同一 stepNo 里可能残留上一次尝试的旧工具步（崩溃/丢弃后重生成），
+                // 把它们也塞进 prompt 会拼出没有对应 tool_call 的孤儿 tool_result。
+                for (ToolExecutionRequest req : reqs) {
+                    AgentStep t = r.stepFor(req);
+                    if (t != null) {
+                        messages.add(ToolExecutionResultMessage.from(req, t.getToolResultJson()));
+                        replayed.add(t.getId());
+                    }
+                }
             } else if (r.text() != null && !r.text().isBlank()) {
                 messages.add(AiMessage.from(r.text()));
-            }
-            for (AgentStep t : r.tools) {
-                messages.add(ToolExecutionResultMessage.from(t.getToolCallId(), t.getToolName(), t.getToolResultJson()));
-                replayed.add(t.getId());
             }
             roundsCompleted++;
         }
@@ -107,11 +114,41 @@ public final class ResumePlanner {
             this.llm = llmStep;
         }
 
+        /**
+         * 一轮完整 ⇔ LLM 成功，且<b>模型请求的每一个工具调用</b>都有对应的、带结果的工具步。
+         *
+         * <p>不能只检查「已存在的步骤都有结果」：M10 的人工确认可能停在批次中间——
+         * 后面的工具调用还没有步骤行，若按旧规则会被误判为完整，重放出「有 tool_call 没 tool_result」
+         * 的 AiMessage，OpenAI 兼容端点直接 400。
+         */
         boolean isComplete() {
             if (llm == null || !AgentStepStatusEnum.SUCCEEDED.name().equals(llm.getStatus())) {
                 return false;
             }
-            return tools.stream().allMatch(t -> t.getToolResultJson() != null);
+            List<ToolExecutionRequest> reqs = toolRequests();
+            if (reqs.isEmpty()) {
+                return tools.isEmpty();
+            }
+            for (ToolExecutionRequest req : reqs) {
+                AgentStep step = stepFor(req);
+                if (step == null || step.getToolResultJson() == null) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private AgentStep stepFor(ToolExecutionRequest req) {
+            for (AgentStep t : tools) {
+                if (req.id() != null && !req.id().isBlank()) {
+                    if (req.id().equals(t.getToolCallId())) {
+                        return t;
+                    }
+                } else if (req.name() != null && req.name().equals(t.getToolName())) {
+                    return t;
+                }
+            }
+            return null;
         }
 
         /** 已开始但没结果的副作用步（read-only 的可以靠重生成轮次自愈，副作用的不行）。 */
@@ -144,7 +181,7 @@ public final class ResumePlanner {
     }
 
     /** 从 LLM 步的 {@code responseJson} 还原工具调用请求（id/name/arguments 三者必须齐全）。 */
-    static List<ToolExecutionRequest> toolRequestsOf(String responseJson) {
+    public static List<ToolExecutionRequest> toolRequestsOf(String responseJson) {
         List<ToolExecutionRequest> reqs = new ArrayList<>();
         try {
             JsonNode calls = MAPPER.readTree(responseJson).get("toolCalls");

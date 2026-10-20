@@ -4,6 +4,7 @@ import com.xiaohua.star.common.BaseResponse;
 import com.xiaohua.star.common.ErrorCode;
 import com.xiaohua.star.common.ResultUtils;
 import com.xiaohua.star.exception.BusinessException;
+import com.xiaohua.star.model.dto.agent.AgentApproveRequest;
 import com.xiaohua.star.model.entity.User;
 import com.xiaohua.star.model.vo.AgentRunVO;
 import com.xiaohua.star.service.AgentRunService;
@@ -20,6 +21,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -53,6 +55,18 @@ public class AgentController {
     @Operation(summary = "继续已挂起的运行（会从断点接着执行）")
     public BaseResponse<AgentRunVO> resume(@PathVariable long runId, HttpServletRequest httpRequest) {
         return ResultUtils.success(agentRunService.resume(runId, requireUserId(httpRequest)));
+    }
+
+    @PostMapping("/run/{runId}/approve")
+    @Operation(summary = "人工确认副作用操作（同意执行恰好一次 / 拒绝并回传原因）")
+    public BaseResponse<AgentRunVO> approve(@PathVariable long runId,
+                                            @RequestBody AgentApproveRequest request,
+                                            HttpServletRequest httpRequest) {
+        if (request == null || request.getApprove() == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "approve 不能为空");
+        }
+        return ResultUtils.success(agentRunService.approve(
+                runId, requireUserId(httpRequest), request.getApprove(), request.getReason()));
     }
 
     @GetMapping("/run/{runId}")

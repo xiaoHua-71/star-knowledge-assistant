@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 /**
  * 一次 Agent 运行的状态视图（前端契约见 frontend/40-agent-中断与恢复.md）。
  *
- * <p>{@code pendingTool} 在 M9 恒为 {@code null}——人工确认（{@code WAITING_APPROVAL}）属 M10。
+ * <p>{@code pendingTool} 仅在 {@code status = WAITING_APPROVAL} 时非空（M10）。
  */
 @Data
 public class AgentRunVO implements Serializable {
@@ -34,8 +34,8 @@ public class AgentRunVO implements Serializable {
     /** 最终助手消息 id（仅 COMPLETED 时非空） */
     private Long outputMessageId;
 
-    /** 待人工确认的工具（M9 恒 null，属 M10） */
-    private Object pendingTool;
+    /** 待人工确认的工具（仅 WAITING_APPROVAL 时非空） */
+    private PendingToolVO pendingTool;
 
     private String errorMsg;
 
@@ -52,6 +52,10 @@ public class AgentRunVO implements Serializable {
     private static final long serialVersionUID = 1L;
 
     public static AgentRunVO from(AgentRun run) {
+        return from(run, null);
+    }
+
+    public static AgentRunVO from(AgentRun run, PendingToolVO pendingTool) {
         if (run == null) {
             return null;
         }
@@ -64,6 +68,7 @@ public class AgentRunVO implements Serializable {
         vo.setMaxRounds(run.getMaxRounds());
         vo.setInputMessageId(run.getInputMessageId());
         vo.setOutputMessageId(run.getOutputMessageId());
+        vo.setPendingTool(pendingTool);
         vo.setErrorMsg(run.getErrorMsg());
         vo.setTokenIn(run.getTokenIn());
         vo.setTokenOut(run.getTokenOut());
