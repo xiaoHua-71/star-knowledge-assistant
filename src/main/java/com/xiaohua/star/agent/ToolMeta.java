@@ -33,4 +33,10 @@ public @interface ToolMeta {
 
     /** 是否需人工确认（M10 消费）。副作用工具的二选一兜底：不能幂等，就让人来点确认。 */
     boolean requireApproval() default false;
+
+    /**
+     * 工具来源（M12，仅写入 {@code ai_tool_log.source}，不参与调用）。
+     * 例：{@code LOCAL}（本地计算）、{@code LOCAL_QUERY}（本地检索）、{@code INTERNAL}（内部业务系统）。
+     */
+    String source() default "LOCAL";
 }

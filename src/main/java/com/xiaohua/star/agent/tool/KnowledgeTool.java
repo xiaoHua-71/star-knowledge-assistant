@@ -27,7 +27,7 @@ public class KnowledgeTool implements AgentToolPack {
 
     @Tool("在用户当前会话关联的知识库中检索相关内容。当问题可能与用户上传的资料/知识库有关时，"
             + "调用它来获取可引用的依据，再据此回答。")
-    @ToolMeta(displayName = "检索知识库", sideEffect = false)
+    @ToolMeta(displayName = "检索知识库", sideEffect = false, source = "LOCAL_QUERY")
     public String searchKnowledge(
             @P(name = "query", description = "检索关键词或问题，用自然语言描述要查找的内容") String query,
             @ToolMemoryId RunContext ctx) {

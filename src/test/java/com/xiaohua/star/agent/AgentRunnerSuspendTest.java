@@ -1,10 +1,12 @@
 package com.xiaohua.star.agent;
 
 import com.xiaohua.star.config.AgentProperties;
+import com.xiaohua.star.config.ChatModelProperties;
 import com.xiaohua.star.model.enums.AgentStepStatusEnum;
 import com.xiaohua.star.model.enums.InterruptTypeEnum;
 import com.xiaohua.star.service.AgentStateService;
 import com.xiaohua.star.service.ConversationMessageService;
+import com.xiaohua.star.service.ObservabilityService;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
@@ -113,6 +115,8 @@ class AgentRunnerSuspendTest {
         ReflectionTestUtils.setField(runner, "toolRegistry", new AgentToolRegistry(List.of()));
         ReflectionTestUtils.setField(runner, "agentProperties", props);
         ReflectionTestUtils.setField(runner, "interruptFlag", flag);
+        ReflectionTestUtils.setField(runner, "observabilityService", mock(ObservabilityService.class));
+        ReflectionTestUtils.setField(runner, "chatModelProperties", new ChatModelProperties());
         return runner;
     }
 

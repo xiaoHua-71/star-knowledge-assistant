@@ -36,6 +36,12 @@ public class ChatModelProperties {
     private String apiKey = "";
 
     /**
+     * provider 标识，仅用于可观测性（{@code ai_call_log.provider}），不参与调用。
+     * 换到百炼时改成 {@code dashscope}，方便日志按 provider 聚合。
+     */
+    private String provider = "deepseek";
+
+    /**
      * 模型名。DeepSeek <b>官方</b> API 的 ID 是 {@code deepseek-flash}（= DeepSeek-V4.1-Flash）。
      *
      * <p>⚠️ model ID 由服务提供方定义，<b>别和百炼的 ID 混用</b>：百炼上同一个模型叫

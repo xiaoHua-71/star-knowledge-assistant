@@ -28,6 +28,7 @@ import com.xiaohua.star.service.AgentRunService;
 import com.xiaohua.star.service.AgentStateService;
 import com.xiaohua.star.service.ConversationMessageService;
 import com.xiaohua.star.service.ConversationService;
+import com.xiaohua.star.service.ObservabilityService;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.model.chat.StreamingChatModel;
@@ -91,6 +92,9 @@ public class AgentRunServiceImpl implements AgentRunService {
     private AgentToolRegistry toolRegistry;
 
     @Resource
+    private ObservabilityService observabilityService;
+
+    @Resource
     private ObjectProvider<StreamingChatModel> streamingChatModelProvider;
 
     @Resource(name = AgentExecutorConfig.AGENT_EXECUTOR)
@@ -138,7 +142,8 @@ public class AgentRunServiceImpl implements AgentRunService {
         requireInputMessageIsLatest(run);
 
         List<ChatMessage> base = memoryBuilder.build(run.getConversationId(), ChatServiceImpl.SYSTEM_PROMPT);
-        ResumePlanner.Result plan = ResumePlanner.reconstruct(base, agentStateService.listSteps(runId));
+        List<AgentStep> steps = agentStateService.listSteps(runId);
+        ResumePlanner.Result plan = ResumePlanner.reconstruct(base, steps);
         if (plan.danglingSideEffect()) {
             // M10：不抛死。转成人工确认：
             //   - 从没认领过（无幂等键）→ 用户同意后可以安全执行
@@ -159,9 +164,7 @@ public class AgentRunServiceImpl implements AgentRunService {
         if (!agentStateService.resumeRun(runId)) {
             throw new BusinessException(ErrorCode.OPERATION_ERROR, "运行状态已变化，无法继续");
         }
-        for (Long stepId : plan.replayedStepIds()) {
-            agentStateService.markReplayed(stepId);
-        }
+        logReplayedSteps(run, steps, plan.replayedStepIds(), null);
 
         RunContext ctx = new RunContext(run.getUserId(), run.getConversationId(),
                 parseKbIds(conversation.getKbIds()));
@@ -234,8 +237,10 @@ public class AgentRunServiceImpl implements AgentRunService {
                 if (!completeApprovedBatch(ctx, run, pending, sink)) {
                     return; // 又遇到需确认的工具，已由 suspendForApproval 收敛
                 }
-                ResumePlanner.Result plan = ResumePlanner.reconstruct(
-                        base, agentStateService.listSteps(runId));
+                List<AgentStep> steps = agentStateService.listSteps(runId);
+                ResumePlanner.Result plan = ResumePlanner.reconstruct(base, steps);
+                // 之前已完成的轮会被重放；本次刚执行的那一步（pending）不算重放
+                logReplayedSteps(run, steps, plan.replayedStepIds(), pending.getId());
                 if (plan.danglingSideEffect()) {
                     AgentStep dangling = findDanglingSideEffectStep(runId);
                     if (dangling != null) {
@@ -494,6 +499,38 @@ public class AgentRunServiceImpl implements AgentRunService {
             }
         }
         return found;
+    }
+
+    /**
+     * 续跑/审批时把「从库里重放」的工具步记为 replayed=1，并写一条 ai_tool_log（replayed=1）。
+     * 这是 M12 验收里「重放机制真的走了」的证据。
+     */
+    private void logReplayedSteps(AgentRun run, List<AgentStep> steps,
+                                  List<Long> replayedStepIds, Long excludeStepId) {
+        for (Long stepId : replayedStepIds) {
+            if (excludeStepId != null && excludeStepId.equals(stepId)) {
+                continue;
+            }
+            AgentStep step = null;
+            for (AgentStep candidate : steps) {
+                if (candidate.getId().equals(stepId)) {
+                    step = candidate;
+                    break;
+                }
+            }
+            if (step == null) {
+                continue;
+            }
+            agentStateService.markReplayed(stepId);
+            boolean success = !AgentStepStatusEnum.FAILED.name().equals(step.getStatus());
+            observabilityService.logToolCall(new ObservabilityService.ToolCallContext(
+                    run.getId(), stepId, run.getUserId(), step.getToolName(),
+                    toolRegistry.source(step.getToolName()),
+                    step.getSideEffect() != null && step.getSideEffect() == 1,
+                    step.getArgumentsJson(), step.getToolResultJson(),
+                    success, success ? null : step.getToolResultJson(),
+                    0L, true, step.getIdempotencyKey()));
+        }
     }
 
     private static String rejectionText(String reason) {

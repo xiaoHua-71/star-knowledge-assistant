@@ -21,7 +21,7 @@ public class SystemTimeTool implements AgentToolPack {
     private static final String[] WEEKDAYS = {"周一", "周二", "周三", "周四", "周五", "周六", "周日"};
 
     @Tool("获取当前的日期和时间。当问题涉及『现在』『今天』『几号』『几点』等需要当前时刻的信息时调用。")
-    @ToolMeta(displayName = "获取当前时间", sideEffect = false)
+    @ToolMeta(displayName = "获取当前时间", sideEffect = false, source = "LOCAL")
     public String getCurrentTime() {
         ZonedDateTime now = ZonedDateTime.now();
         String weekday = WEEKDAYS[now.getDayOfWeek().getValue() - 1];

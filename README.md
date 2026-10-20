@@ -54,6 +54,12 @@
 - **「先落库再执行」**：副作用未知时，重启后能知道「这一步本来打算做什么」
 - 启动扫描非终态运行 → 标记为 `SUSPENDED(SERVER_RESTART)`，幂等恢复的基础
 
+### 📊 可观测性（M12）
+- 每次 LLM 调用一行 `ai_call_log`：provider / 模型 / token / 首 token 延迟 / 总耗时 / 成本
+- 每次工具真实执行或结果重放一行 `ai_tool_log`：参数、结果、耗时、`replayed`、幂等键
+- `GET /tools/logs` 查明细，`GET /tools/logs/summary` 看 token、成本、失败与重放次数
+- **写日志失败不影响对话**；价格未配置时成本写 `NULL`，不伪装成 0
+
 ### ⚡ 流式输出（SSE）
 - `StreamingChatModel` → 事件表 → SSE，打字机效果
 - `run_start` / `message_delta` / `tool_call` / `tool_result` / `interrupt` / `run_end` / `error` 一套协议
@@ -191,7 +197,7 @@ JAVA_HOME=/e/Java/jdk-21.0.5 mvn spring-boot:run
 | **对话** | `POST /api/chat/message`（非流式）· `POST /api/chat/stream`（SSE 流式） |
 | **会话** | `POST /api/conversation/create` · `GET /api/conversation/list` · `GET /api/conversation/{id}/messages` · `POST /api/conversation/message/delete` |
 | **知识库** | `POST /api/kb/create` · `POST /api/kb/{kbId}/doc/upload` · `doc/url` · `POST /api/kb/{id}/rebuild` · `POST /api/kb/{id}/search` |
-| **工具** | `GET /api/tools/list`（当前可调用的工具及其参数） |
+| **工具** | `GET /api/tools/list`（能力清单） · `GET /api/tools/logs`（调用记录） · `GET /api/tools/logs/summary`（token/成本汇总） |
 | **Agent 运行** | `POST /api/agent/run/{id}/interrupt` · `resume` · `approve`（人工确认） · `GET /api/agent/run/{id}` · `GET /api/agent/run/{id}/stream` |
 
 > 完整契约见 [`frontend/`](frontend/00-索引与阅读顺序.md)。
@@ -206,13 +212,14 @@ JAVA_HOME=/e/Java/jdk-21.0.5 mvn spring-boot:run
 | **Phase 2** | M0–M3 | RAG 从远端搬到本地，评测体系先立起来 | ✅ |
 | **Phase 3** | M4–M6 | 会话、记忆、流式——「能用起来」 | ✅ |
 | **Phase 4** | M7–M10 | 工具调用 + 中断续跑——「像 Agent 了」 | ✅ M7 / M8 / M9 / M10 全部完成 |
-| **Phase 5** | M11–M13 | 知识库管理、可观测性、前端联调——「能交付」 | 🟡 M11 已随 RAG 完成；M12 可观测性 / M13 契约冻结待做 |
+| **Phase 5** | M11–M13 | 知识库管理、可观测性、前端联调——「能交付」 | 🟡 M11（RAG 生命周期）/ M12（可观测性）已完成；M13 契约冻结待做 |
 
 **已落地**：RAG 全链路（混合检索 + RRF + 增量索引）、会话与消息、对话记忆、SSE 流式、工具调用、
-Agent 状态落库与启动恢复、**中断/续跑/断线重连、副作用工具人工确认与幂等执行**。
+Agent 状态落库与启动恢复、中断/续跑/断线重连、副作用工具人工确认与幂等执行、
+**LLM/工具调用日志与 token/成本汇总**。
 
-**待做**：可观测性（`ai_call_log` / `/tools/logs`）、`GET /agent/run/{id}/steps`、运行列表、`ping` 心跳、
-超时封存、离线评测基线。
+**待做**：`GET /agent/run/{id}/steps`、运行列表、`ping` 心跳、超时封存、离线评测基线；
+可观测性的日志归档/分区与脱敏。
 
 ---
 

@@ -2,6 +2,7 @@ package com.xiaohua.star.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xiaohua.star.config.AgentProperties;
+import com.xiaohua.star.config.ChatModelProperties;
 import com.xiaohua.star.model.entity.AgentStep;
 import com.xiaohua.star.model.entity.ConversationMessage;
 import com.xiaohua.star.model.enums.AgentEventTypeEnum;
@@ -11,11 +12,13 @@ import com.xiaohua.star.model.enums.InterruptTypeEnum;
 import com.xiaohua.star.model.vo.PendingToolVO;
 import com.xiaohua.star.service.AgentStateService;
 import com.xiaohua.star.service.ConversationMessageService;
+import com.xiaohua.star.service.ObservabilityService;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
@@ -91,6 +94,12 @@ public class AgentRunner {
     @Resource
     private RunInterruptFlag interruptFlag;
 
+    @Resource
+    private ObservabilityService observabilityService;
+
+    @Resource
+    private ChatModelProperties chatModelProperties;
+
     /**
      * 一次运行的结果。{@code suspended} 为 true 时表示已挂起（无助手消息、无 run_end）。
      */
@@ -108,6 +117,10 @@ public class AgentRunner {
 
     /** 一批工具执行后的循环位置；{@code suspended=true} 时调用方应结束本轮运行。 */
     private record ToolBatchOutcome(int seq, boolean suspended) {
+    }
+
+    /** 一次流式调用的结果：响应 + 首 token 延迟（M12；无 delta 时为 null）。 */
+    private record StreamResult(ChatResponse response, Long firstTokenMs) {
     }
 
     /**
@@ -170,23 +183,34 @@ public class AgentRunner {
                 round++;
                 seq++;
                 long llmStart = System.currentTimeMillis();
+                String requestSnapshot = llmRequestSnapshot(messages, specs);
                 long llmStepId = agentStateService.beginLlmStep(
-                        runId, round, seq, llmRequestSnapshot(messages, specs));
+                        runId, round, seq, requestSnapshot);
 
-                ChatResponse response;
+                StreamResult stream;
                 try {
-                    response = streamOnce(model,
+                    stream = streamOnce(model,
                             ChatRequest.builder().messages(messages).toolSpecifications(specs).build(), sink, runId);
                 } catch (RuntimeException e) {
+                    long elapsed = System.currentTimeMillis() - llmStart;
                     agentStateService.finishLlmStep(llmStepId, null,
-                            System.currentTimeMillis() - llmStart, AgentStepStatusEnum.FAILED, e.getMessage());
+                            elapsed, AgentStepStatusEnum.FAILED, e.getMessage());
+                    logChatCall(ctx, runId, requestSnapshot, null, null, null, null,
+                            null, elapsed, false, e.getMessage());
                     throw e;
                 }
+                ChatResponse response = stream.response();
 
                 AiMessage ai = normalizeToolCallIds(response.aiMessage(), round);
                 int[] tok = tokenCountsOf(response);
                 totalIn += tok[0];
                 totalOut += tok[1];
+
+                // M12：LLM 调用日志（无论本轮是否被中断，token 都已经真实消耗）
+                int totalTok = totalTokensOf(response, tok);
+                logChatCall(ctx, runId, requestSnapshot, llmResponseSnapshot(ai),
+                        nullIfZero(tok[0]), nullIfZero(tok[1]), nullIfZero(totalTok),
+                        stream.firstTokenMs(), System.currentTimeMillis() - llmStart, true, null);
 
                 // 安全点 2：模型返回后（无条件）。命中则把本步记 INTERRUPTED 并挂起——本轮的输出（无论
                 // 是半截文字还是完整回答）都丢弃，续跑时重生成这一段。见 knowledge/12 ⑦ 的取舍。
@@ -262,7 +286,7 @@ public class AgentRunner {
 
             ToolExecutionOutcome out = sideEffect
                     ? executeSideEffectTool(ctx, runId, step, req, sink)
-                    : executeAndRecord(ctx, runId, stepId, req, sink);
+                    : executeAndRecord(ctx, runId, stepId, req, sink, null);
 
             if (out.needsApproval()) {
                 // 撞键的是另一行时，当前意图行永远不会被执行，必须封掉；
@@ -292,7 +316,7 @@ public class AgentRunner {
         AgentStateService.ClaimResult claim = agentStateService.claimToolStep(step.getId(), key);
 
         if (claim == AgentStateService.ClaimResult.CLAIMED) {
-            return executeAndRecord(ctx, runId, step.getId(), req, sink);
+            return executeAndRecord(ctx, runId, step.getId(), req, sink, key);
         }
 
         // 三分支：撞键看已存在那行；非可认领看当前行
@@ -301,7 +325,7 @@ public class AgentRunner {
                 : agentStateService.getStep(step.getId());
 
         if (existing != null && existing.getToolResultJson() != null) {
-            return replayResult(existing, step, req, runId, ctx, sink);
+            return replayResult(existing, step, req, runId, ctx, sink, key);
         }
         // 无结果：上次可能已经发出去了。既不能重放也不能重跑 → 转人工确认
         return new ToolExecutionOutcome(null, false, true,
@@ -311,7 +335,7 @@ public class AgentRunner {
     /** 撞键/已执行：把已有结果当作本次结果，**绝不重新发起调用**（knowledge/12 坑 3）。 */
     private ToolExecutionOutcome replayResult(AgentStep existing, AgentStep currentStep,
                                               ToolExecutionRequest req, long runId, RunContext ctx,
-                                              AgentEventSink sink) {
+                                              AgentEventSink sink, String idempotencyKey) {
         String text = existing.getToolResultJson();
         boolean success = !AgentStepStatusEnum.FAILED.name().equals(existing.getStatus());
 
@@ -328,6 +352,8 @@ public class AgentRunner {
 
         emitToolResult(sink, runId, ctx.conversationId(), currentStep.getId(), req.id(),
                 success, 0L, text, false);
+        logToolCall(ctx, runId, currentStep.getId(), req, text,
+                success, success ? null : text, 0L, true, idempotencyKey);
         log.info("副作用工具结果重放: runId={}, tool={}, stepId={}", runId, req.name(), currentStep.getId());
         return new ToolExecutionOutcome(text, true, false, null, null);
     }
@@ -335,12 +361,13 @@ public class AgentRunner {
     /** 执行一个只读工具（审批流程里「后续只读调用」也用这个入口）。 */
     public ToolExecutionOutcome executeReadOnlyTool(RunContext ctx, long runId, AgentStep step,
                                                     ToolExecutionRequest req, AgentEventSink sink) {
-        return executeAndRecord(ctx, runId, step.getId(), req, sink);
+        return executeAndRecord(ctx, runId, step.getId(), req, sink, null);
     }
 
     /** 真正执行工具并回填结果（只读工具也走这里，只是没有幂等认领）。 */
     private ToolExecutionOutcome executeAndRecord(RunContext ctx, long runId, long stepId,
-                                                  ToolExecutionRequest req, AgentEventSink sink) {
+                                                  ToolExecutionRequest req, AgentEventSink sink,
+                                                  String idempotencyKey) {
         ToolRunResult result = toolRegistry.execute(req, ctx);
         String resultText = truncate(result.text());
         boolean truncated = !resultText.equals(result.text());
@@ -351,7 +378,20 @@ public class AgentRunner {
                 result.isError() ? resultText : null);
         emitToolResult(sink, runId, ctx.conversationId(), stepId, req.id(),
                 !result.isError(), result.elapsedMs(), resultText, truncated);
+        logToolCall(ctx, runId, stepId, req, resultText,
+                !result.isError(), result.isError() ? resultText : null,
+                result.elapsedMs(), false, idempotencyKey);
         return new ToolExecutionOutcome(resultText, false, false, null, null);
+    }
+
+    /** M12：写一条工具调用日志（真实执行或重放）。失败由 ObservabilityService 内部吞掉。 */
+    private void logToolCall(RunContext ctx, long runId, long stepId, ToolExecutionRequest req,
+                             String resultText, boolean success, String errorMsg,
+                             long elapsedMs, boolean replayed, String idempotencyKey) {
+        observabilityService.logToolCall(new ObservabilityService.ToolCallContext(
+                runId, stepId, ctx.userId(), req.name(), toolRegistry.source(req.name()),
+                toolRegistry.sideEffect(req.name()), req.arguments(), resultText,
+                success, errorMsg, elapsedMs, replayed, idempotencyKey));
     }
 
     /**
@@ -471,8 +511,10 @@ public class AgentRunner {
      * LC4j 的 {@code streamingHandle().cancel()} 之后终态回调是否仍到达依 provider 而定，会让我们阻塞等待的
      * future 挂死。所以线程等这次调用自然结束，再由安全点 2 收敛（最多一次调用的延迟，符合 knowledge/12）。
      */
-    private ChatResponse streamOnce(StreamingChatModel model, ChatRequest request, AgentEventSink sink, long runId) {
+    private StreamResult streamOnce(StreamingChatModel model, ChatRequest request, AgentEventSink sink, long runId) {
         CompletableFuture<ChatResponse> future = new CompletableFuture<>();
+        long streamStart = System.currentTimeMillis();
+        AtomicLong firstTokenMs = new AtomicLong(-1L);
         AtomicLong lastCheck = new AtomicLong(0L);
         AtomicBoolean suppressed = new AtomicBoolean(false);
         model.chat(request, new StreamingChatResponseHandler() {
@@ -480,6 +522,10 @@ public class AgentRunner {
             public void onPartialResponse(String partialResponse) {
                 if (partialResponse == null || partialResponse.isEmpty()) {
                     return;
+                }
+                // M12：首 token 延迟（用户真正感知到的等待）；被中断抑制后不再更新
+                if (firstTokenMs.get() < 0) {
+                    firstTokenMs.compareAndSet(-1L, System.currentTimeMillis() - streamStart);
                 }
                 if (!suppressed.get()) {
                     long now = System.currentTimeMillis();
@@ -506,7 +552,9 @@ public class AgentRunner {
             }
         });
         try {
-            return future.get();
+            ChatResponse response = future.get();
+            Long first = firstTokenMs.get() < 0 ? null : firstTokenMs.get();
+            return new StreamResult(response, first);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("对话被中断", e);
@@ -578,6 +626,13 @@ public class AgentRunner {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("messageCount", messages.size());
         m.put("toolNames", specs.stream().map(ToolSpecification::name).toList());
+        // 完整 prompt 体积大且序列化 LC4j 消息有兼容风险；至少把「用户到底问了什么」留下
+        UserMessage.findLast(messages).ifPresent(u -> {
+            String text = u.singleText();
+            if (text != null) {
+                m.put("lastUserMessage", text.length() > 2000 ? text.substring(0, 2000) + "…" : text);
+            }
+        });
         return toJson(m);
     }
 
@@ -598,6 +653,17 @@ public class AgentRunner {
         return toJson(m);
     }
 
+    /** M12：写一条模型调用日志。失败由 ObservabilityService 内部吞掉，不影响运行。 */
+    private void logChatCall(RunContext ctx, long runId, String requestJson, String responseJson,
+                             Integer promptTokens, Integer completionTokens, Integer totalTokens,
+                             Long firstTokenMs, long elapsedMs, boolean success, String errorMsg) {
+        observabilityService.logChatCall(new ObservabilityService.ChatCallContext(
+                ctx.conversationId(), runId, ctx.userId(),
+                chatModelProperties.getProvider(), chatModelProperties.getModelName(), true,
+                requestJson, responseJson, promptTokens, completionTokens, totalTokens,
+                firstTokenMs, elapsedMs, success, errorMsg));
+    }
+
     /** 返回 {@code [input, output]}；两者都缺时把 total 记到 output，至少不丢总量。 */
     private static int[] tokenCountsOf(ChatResponse response) {
         if (response.metadata() == null || response.metadata().tokenUsage() == null) {
@@ -610,6 +676,19 @@ public class AgentRunner {
             out = u.totalTokenCount();
         }
         return new int[]{in, out};
+    }
+
+    private static int totalTokensOf(ChatResponse response, int[] tok) {
+        if (response.metadata() != null && response.metadata().tokenUsage() != null
+                && response.metadata().tokenUsage().totalTokenCount() != null) {
+            return response.metadata().tokenUsage().totalTokenCount();
+        }
+        return tok[0] + tok[1];
+    }
+
+    /** 0 在 token 计数里表示「provider 没给」，落库记为 NULL 更诚实。 */
+    private static Integer nullIfZero(int v) {
+        return v == 0 ? null : v;
     }
 
     private static String str(Object v) {

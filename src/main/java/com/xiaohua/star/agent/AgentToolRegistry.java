@@ -138,6 +138,12 @@ public class AgentToolRegistry {
         return metaByName.get(toolName);
     }
 
+    /** 工具来源（写 ai_tool_log.source）；未知工具兜底 {@code LOCAL}。 */
+    public String source(String toolName) {
+        ToolMeta meta = metaByName.get(toolName);
+        return meta == null ? "LOCAL" : meta.source();
+    }
+
     /**
      * 构造待确认工具视图（{@code pendingTool}）。参数解析失败也不抛异常——
      * 确认框展示的是「坏掉的参数原文兜底」，不能因此拖垮运行。

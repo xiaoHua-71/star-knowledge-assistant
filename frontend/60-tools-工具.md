@@ -1,6 +1,6 @@
 # tools · 工具
 
-> 🟡 **状态：`GET /tools/list` 已实现（M7，2026-10-14；M10 起含 `idempotentBackend` 与副作用工具）——返回下方「真实响应」；`GET /tools/logs` 尚未实现**。
+> ✅ **状态：`GET /tools/list` 已实现（M7；M10 起含 `idempotentBackend` 与副作用工具）；`GET /tools/logs` 与 `/tools/logs/summary` 已实现（M12，2026-10-20）。**
 >
 > 当前**已上线**的工具：`getCurrentTime`、`searchKnowledge`（只读），`createTicket`（**有副作用、需人工确认**，M10）。
 
@@ -108,19 +108,52 @@ GET /api/tools/list
 
 **⚠️ 关于 `displayName`**：后端必须给每个工具配中文名。让用户看到 `searchKnowledge` 这种英文标识符是很糟糕的体验。**前端如果拿到的 `displayName` 是空的，要自己有一份兜底映射表**，不要直接把 `name` 显示出来。
 
-### 2. 工具调用记录
+### 2. 工具调用记录（✅ 已实现，M12）
 
 ```
-GET /api/tools/logs?runId={runId}&current=1&pageSize=20
+GET /api/tools/logs?runId={runId}&toolName={toolName}&success={true|false}&current=1&pageSize=20
 ```
 
 | 参数 | 说明 |
 |---|---|
 | `runId` | 可选。不传则返回当前用户的全部调用记录 |
-| `toolName` | 可选，按工具筛选 |
-| `success` | 可选，只看成功的或只看失败的 |
+| `toolName` | 可选，按工具筛选（精确匹配英文名） |
+| `success` | 可选，`true` 只看成功、`false` 只看失败 |
+| `current` / `pageSize` | 分页；`pageSize` 上限 100 |
 
-响应：
+**真实响应（2026-10-20 实测，可直接对照）**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "records": [
+      {
+        "id": "1",
+        "runId": "8",
+        "toolName": "getCurrentTime",
+        "displayName": "获取当前时间",
+        "sideEffect": false,
+        "success": true,
+        "arguments": {},
+        "result": { "text": "当前时间：2026-10-20 21:17:41（周二），时区 Asia/Shanghai" },
+        "errorMsg": null,
+        "elapsedMs": 3,
+        "replayed": false,
+        "createTime": "2026-10-20T21:17:41.581"
+      }
+    ],
+    "total": "1",
+    "size": "10",
+    "current": "1",
+    "pages": "1"
+  },
+  "message": "ok"
+}
+```
+
+> ⚠️ 分页的计数字段（`total` / `size` / `current` / `pages`）是**字符串**，与全项目约定一致（见 [01-通用约定](01-通用约定.md)）。
+> `elapsedMs` 是**数字**；`id` / `runId` 是字符串。
 
 ```ts
 interface ToolLogVO {
@@ -130,8 +163,8 @@ interface ToolLogVO {
   displayName: string;
   sideEffect: boolean;
   success: boolean;
-  arguments: object | null;
-  result: object | null;      // 可能被截断
+  arguments: object | null;   // 解析后的参数；坏 JSON 时为 null
+  result: object | null;      // 非 JSON 文本包成 { text: "..." }；可能被截断
   errorMsg: string | null;
   elapsedMs: number | null;
   replayed: boolean;          // ★ 结果来自中断恢复时的重放，不是重新执行
@@ -145,6 +178,59 @@ interface ToolLogVO {
 
 1. 解释为什么这次响应特别快
 2. 让用户确认「系统没有重复执行我的操作」——这对有副作用的操作尤其重要
+
+**日志什么时候产生**：每次工具**真实执行**写一行（`replayed=false`）；续跑/审批时的**结果重放**再写一行（`replayed=true`）。
+所以同一个工具步在日志里最多出现两行：一次执行 + 一次重放。被拒绝的工具操作不会单独产生日志（它在 `agent_step` / 事件里）。
+
+### 3. 调用汇总（✅ 已实现，M12）
+
+```
+GET /api/tools/logs/summary?runId={runId}
+```
+
+`runId` 可选；不传则汇总当前用户的全部调用。
+
+```ts
+interface CallSummaryVO {
+  runId: string | null;
+  callCount: string;          // 以下 count/token 字段都是字符串
+  promptTokens: string;
+  completionTokens: string;
+  totalTokens: string;
+  costYuan: string | null;    // 金额字符串；未配置单价时为 null（不是 0）
+  avgElapsedMs: number;
+  avgFirstTokenMs: number;
+  toolCallCount: string;
+  toolFailures: string;
+  replayedCount: string;      // 重放次数：中断续跑确实走重放的证据
+}
+```
+
+**真实响应（run 9）**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "runId": "9",
+    "callCount": "3",
+    "promptTokens": "2283",
+    "completionTokens": "705",
+    "totalTokens": "2988",
+    "costYuan": null,
+    "avgElapsedMs": 1852,
+    "avgFirstTokenMs": 868,
+    "toolCallCount": "2",
+    "toolFailures": "1",
+    "replayedCount": "1"
+  },
+  "message": "ok"
+}
+```
+
+> `costYuan` 为 `null` 表示**后端没有配置 token 单价**（`ai.observability.*-price-per-1k-yuan`）。
+> 前端应显示「成本未配置」，不要显示成 ¥0。
+> `avgFirstTokenMs` 只统计有文本 delta 的调用；只返回 tool_call 的轮次没有首 token。
 
 ## 初始工具清单
 
