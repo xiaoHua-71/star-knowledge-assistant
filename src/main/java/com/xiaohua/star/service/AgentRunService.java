@@ -1,7 +1,11 @@
 package com.xiaohua.star.service;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.xiaohua.star.model.vo.AgentRunVO;
+import com.xiaohua.star.model.vo.AgentStepVO;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.util.List;
 
 /**
  * Agent 运行的对外操作（中断 / 续跑 / 查询 / 重连）。见 frontend/40-agent-中断与恢复.md。
@@ -33,4 +37,10 @@ public interface AgentRunService {
      * 这是<b>纯读、幂等</b>的操作。
      */
     SseEmitter reconnect(long runId, Long userId, Long lastEventId);
+
+    /** 查询一次运行的执行链（按 seq 升序）。 */
+    List<AgentStepVO> listSteps(long runId, Long userId);
+
+    /** 会话下的运行列表（按 id 倒序分页）。会校验会话归属。 */
+    IPage<AgentRunVO> listRuns(Long conversationId, Long userId, int current, int pageSize);
 }

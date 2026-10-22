@@ -1,5 +1,6 @@
 package com.xiaohua.star.service.impl;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xiaohua.star.agent.AgentEventSink;
 import com.xiaohua.star.agent.AgentRunner;
@@ -8,6 +9,7 @@ import com.xiaohua.star.agent.AgentToolRegistry;
 import com.xiaohua.star.agent.ResumePlanner;
 import com.xiaohua.star.agent.RunContext;
 import com.xiaohua.star.agent.RunInterruptFlag;
+import com.xiaohua.star.agent.SseHeartbeat;
 import com.xiaohua.star.ai.MemoryBuilder;
 import com.xiaohua.star.common.ErrorCode;
 import com.xiaohua.star.config.AgentExecutorConfig;
@@ -23,6 +25,7 @@ import com.xiaohua.star.model.enums.AgentStepStatusEnum;
 import com.xiaohua.star.model.enums.AgentStepTypeEnum;
 import com.xiaohua.star.model.enums.InterruptTypeEnum;
 import com.xiaohua.star.model.vo.AgentRunVO;
+import com.xiaohua.star.model.vo.AgentStepVO;
 import com.xiaohua.star.model.vo.PendingToolVO;
 import com.xiaohua.star.service.AgentRunService;
 import com.xiaohua.star.service.AgentStateService;
@@ -84,6 +87,9 @@ public class AgentRunServiceImpl implements AgentRunService {
 
     @Resource
     private AgentStreamHub agentStreamHub;
+
+    @Resource
+    private SseHeartbeat sseHeartbeat;
 
     @Resource
     private RunInterruptFlag interruptFlag;
@@ -276,10 +282,31 @@ public class AgentRunServiceImpl implements AgentRunService {
     }
 
     @Override
+    public List<AgentStepVO> listSteps(long runId, Long userId) {
+        requireOwned(runId, userId);
+        return agentStateService.listSteps(runId).stream()
+                .map(AgentStepVO::from)
+                .toList();
+    }
+
+    @Override
+    public IPage<AgentRunVO> listRuns(Long conversationId, Long userId, int current, int pageSize) {
+        if (conversationId == null) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "conversationId 不能为空");
+        }
+        conversationService.getOwnedOrThrow(conversationId, userId);
+        return agentStateService.pageRuns(conversationId, current, pageSize).convert(this::toVO);
+    }
+
+    @Override
     public SseEmitter reconnect(long runId, Long userId, Long lastEventId) {
         AgentRun run = requireOwned(runId, userId);
         long from = lastEventId == null ? 0L : lastEventId;
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+        Runnable stopHeartbeat = sseHeartbeat.start(emitter);
+        emitter.onCompletion(stopHeartbeat);
+        emitter.onTimeout(stopHeartbeat);
+        emitter.onError(t -> stopHeartbeat.run());
 
         // 运行还在跑：挂到活通道上（hub 在锁内补发 + 发快照 + 换 emitter），之后继续推新事件
         if (agentStreamHub.attach(runId, emitter, from)) {

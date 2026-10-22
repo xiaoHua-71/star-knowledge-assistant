@@ -6,7 +6,9 @@ import com.xiaohua.star.common.ResultUtils;
 import com.xiaohua.star.exception.BusinessException;
 import com.xiaohua.star.model.dto.agent.AgentApproveRequest;
 import com.xiaohua.star.model.entity.User;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.xiaohua.star.model.vo.AgentRunVO;
+import com.xiaohua.star.model.vo.AgentStepVO;
 import com.xiaohua.star.service.AgentRunService;
 import com.xiaohua.star.service.UserService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -26,6 +28,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.util.List;
 
 /**
  * Agent 运行接口（中断 / 继续 / 查询 / 重连）。见 frontend/40-agent-中断与恢复.md。
@@ -81,6 +85,23 @@ public class AgentController {
                              @RequestParam(value = "lastEventId", required = false) Long lastEventId,
                              HttpServletRequest httpRequest) {
         return agentRunService.reconnect(runId, requireUserId(httpRequest), lastEventId);
+    }
+
+    @GetMapping("/run/{runId}/steps")
+    @Operation(summary = "查询执行链（每轮 LLM 调用 / 工具调用的状态与结果）")
+    public BaseResponse<List<AgentStepVO>> steps(@PathVariable long runId, HttpServletRequest httpRequest) {
+        return ResultUtils.success(agentRunService.listSteps(runId, requireUserId(httpRequest)));
+    }
+
+    @GetMapping("/run/list")
+    @Operation(summary = "会话下的运行列表（分页）")
+    public BaseResponse<IPage<AgentRunVO>> runList(
+            @RequestParam("conversationId") Long conversationId,
+            @RequestParam(value = "current", defaultValue = "1") int current,
+            @RequestParam(value = "pageSize", defaultValue = "20") int pageSize,
+            HttpServletRequest httpRequest) {
+        return ResultUtils.success(agentRunService.listRuns(
+                conversationId, requireUserId(httpRequest), current, pageSize));
     }
 
     /** 与 ChatController 同因：建流失败必须回 JSON 信封（HTTP 200），否则 Accept 协商会 406。 */

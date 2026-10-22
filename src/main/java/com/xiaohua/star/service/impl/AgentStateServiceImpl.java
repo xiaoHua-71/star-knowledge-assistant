@@ -2,6 +2,8 @@ package com.xiaohua.star.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.xiaohua.star.mapper.AgentEventMapper;
 import com.xiaohua.star.mapper.AgentRunMapper;
 import com.xiaohua.star.mapper.AgentStepMapper;
@@ -366,5 +368,33 @@ public class AgentStateServiceImpl implements AgentStateService {
                         AgentRunStatusEnum.RUNNING.name(),
                         AgentRunStatusEnum.WAITING_APPROVAL.name()));
         return count != null && count > 0;
+    }
+
+    @Override
+    public IPage<AgentRun> pageRuns(Long conversationId, int current, int pageSize) {
+        Page<AgentRun> page = new Page<>(Math.max(current, 1), Math.min(Math.max(pageSize, 1), 100));
+        return agentRunMapper.selectPage(page, new LambdaQueryWrapper<AgentRun>()
+                .eq(AgentRun::getConversationId, conversationId)
+                .orderByDesc(AgentRun::getId));
+    }
+
+    @Override
+    public List<AgentRun> listSuspendedBefore(LocalDateTime cutoff, int limit) {
+        return agentRunMapper.selectList(new LambdaQueryWrapper<AgentRun>()
+                .eq(AgentRun::getStatus, AgentRunStatusEnum.SUSPENDED.name())
+                .lt(AgentRun::getUpdateTime, cutoff)
+                .orderByAsc(AgentRun::getId)
+                .last("limit " + Math.max(limit, 1)));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean cancelRunIfSuspended(long runId) {
+        int rows = agentRunMapper.update(null, new LambdaUpdateWrapper<AgentRun>()
+                .eq(AgentRun::getId, runId)
+                .eq(AgentRun::getStatus, AgentRunStatusEnum.SUSPENDED.name())
+                .set(AgentRun::getStatus, AgentRunStatusEnum.CANCELLED.name())
+                .set(AgentRun::getEndTime, LocalDateTime.now()));
+        return rows > 0;
     }
 }

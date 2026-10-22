@@ -210,14 +210,13 @@ Content-Type: application/json
 | `todo_update` | ❌ 未实现 | — | 无计划功能 |
 | `message_snapshot` | ✅（M9） | `{messageId(可空), text}` | 重连补发的**当前全文**，**替换**语义 |
 | `interrupt` | ✅（M9/M10） | `{runId, status, interruptType, pendingTool?}` | M10 人工确认时 `status=WAITING_APPROVAL`、`interruptType=APPROVAL_REQUIRED` |
-| `ping` | ❌ 未实现 | — | 无心跳保活 |
+| `ping` | ✅（M13） | `{}` | 约每 15 秒一次、无 `id`、不落库、不参与补发；忽略即可，也可用来判断连接存活 |
 
 ### 前端当前「可以做」与「别做」
 
-**可以做**：发消息 → 逐字**追加**显示 → 收到 `run_end` 收尾（清「生成中」、刷新会话列表）→ 拉历史消息；渲染 `tool_call` / `tool_result`（中文名用 `GET /tools/list` 映射）；**停止 / 继续 / 断线重连 / 人工确认**（见 [40-agent](40-agent-中断与恢复.md)）。这条主链路端到端可联调。
+**可以做**：发消息 → 逐字**追加**显示 → 收到 `run_end` 收尾（清「生成中」、刷新会话列表）→ 拉历史消息；渲染 `tool_call` / `tool_result`（中文名用 `GET /tools/list` 映射）；**停止 / 继续 / 断线重连 / 人工确认**（见 [40-agent](40-agent-中断与恢复.md)）；用 `ping` 做心跳 / 连接存活判断（M13）。
 
 **别实现（依赖的事件 / 接口未落地）**：
-- **基于 `ping` 的心跳 / 连接存活判断**：无 `ping`。
 - **50001 并发护栏**：后端**没有**校验「同一会话连点两次发送」；第二次会启动新运行并把旧运行置 `NEW_MESSAGE` 挂起——前端仍应在「生成中」**禁用发送按钮**。
 - **规范化的引用来源事件**：`tool_result`（`toolName=searchKnowledge`）的 `result` 里已含检索片段/来源，可临时提取；专门的 `references` 事件仍未做。
 
@@ -281,7 +280,7 @@ export interface ErrorPayload {
 }
 ```
 
-> `todo_update` / `message_snapshot` / `interrupt` / `ping` 属 M9，前端**暂不实现**（见上方「已实现的事件」表）。`tool_call` / `tool_result` 已在 M7 实现。事件类型在 [02-SSE协议规范](02-SSE协议规范.md) 第五节有完整定义。
+> `todo_update` 仍未实现；`message_snapshot` / `interrupt` 已随 M9/M10 实现，`ping` 已随 M13 实现（见上方「已实现的事件」表）。`tool_call` / `tool_result` 已在 M7 实现。事件类型在 [02-SSE协议规范](02-SSE协议规范.md) 第五节有完整定义。
 
 ## 待定项
 

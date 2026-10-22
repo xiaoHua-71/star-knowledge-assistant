@@ -133,6 +133,13 @@ ai:
   agent:
     max-rounds: 8           # 工具调用循环的最大轮次护栏（一轮 = 一次「模型响应 + 可能的一批工具执行」）
     max-tool-result-chars: 4000   # 单个工具结果进 prompt / 事件前的最大字符数，超出截断
+    # SSE 心跳（M13）：约每 15 秒推一个 ping 事件，保活并让前端确认连接存活；<=0 关闭
+    sse-ping-interval-ms: 15000
+    # 超时封存（M13）：SUSPENDED 超过 24h 仍未继续 → CANCELLED，半截文本落成 interrupted 助手消息；<=0 关闭
+    suspend-retention-ms: 86400000
+    # 封存扫描间隔（10 分钟）与首次扫描延迟（1 分钟）
+    seal-scan-interval-ms: 600000
+    seal-initial-delay-ms: 60000
 
   # 可观测性（ai_call_log / ai_tool_log，见 knowledge/50）。
   observability:

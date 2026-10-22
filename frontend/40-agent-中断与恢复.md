@@ -1,7 +1,6 @@
 # agent · 中断与恢复
 
-> ✅ **已实现：停止 / 继续 / 查询 / 重连（2026-10-16，M9）；人工确认 `approve` + `WAITING_APPROVAL` + `pendingTool`（2026-10-20，M10）。**
-> ⬜ **仍未实现**：执行链查询 `GET .../steps`、运行列表 `GET .../run/list`。
+> ✅ **已实现：停止 / 继续 / 查询 / 重连（M9）、人工确认 `approve` + `WAITING_APPROVAL` + `pendingTool`（M10）、执行链查询 `GET .../steps` + 运行列表 `GET .../run/list` + 超时封存 `CANCELLED`（M13，2026-10-22）。**
 
 这是这个项目最有特色的功能：**回答生成到一半可以停下来，之后接着继续。** 内部实现见 [knowledge/12-中断与恢复的状态机](../knowledge/12-中断与恢复的状态机.md)；这里只讲前端怎么用。
 
@@ -88,7 +87,7 @@ interface PendingTool {
 | `WAITING_APPROVAL` | 等用户确认一个有副作用的操作 | 弹确认框，展示 `pendingTool` |
 | `COMPLETED` | 正常结束 | 正常展示回答 |
 | `FAILED` | 出错了 | 展示 `errorMsg` + 重试按钮 |
-| `CANCELLED` | 被放弃或超时回收 | 展示「已取消」（**后端暂未产生该状态**，超时封存未做） |
+| `CANCELLED` | 被放弃或超时回收 | 展示「已取消」。M13 起，`SUSPENDED` 超过保留期（默认 24h）会被定时任务封存为该状态；之后不能再 `resume` |
 
 ## 接口
 
@@ -224,7 +223,7 @@ GET /api/agent/run/{runId}
 
 ---
 
-### 5. 查询执行链（⬜ **未实现，暂不可用**）
+### 5. 查询执行链（✅ **已实现，M13**）
 
 ```
 GET /api/agent/run/{runId}/steps
@@ -252,7 +251,7 @@ interface AgentStepVO {
 
 **`replayed` 字段**：`true` 表示这一步的结果是**从中断点恢复时直接读出来的**，没有重新执行。界面上可以标注「已恢复」——这既解释了为什么这次没花时间，也证明了系统没有重复执行副作用。
 
-### 6. 查询会话下的运行列表（⬜ **未实现，暂不可用**）
+### 6. 查询会话下的运行列表（✅ **已实现，M13**）
 
 ```
 GET /api/agent/run/list?conversationId=7&current=1&pageSize=20
@@ -261,6 +260,8 @@ GET /api/agent/run/list?conversationId=7&current=1&pageSize=20
 响应：分页结构，`records` 是 `AgentRunVO` 数组。
 
 **用途**：一个会话里每次提问都是一次运行。做「查看历史运行」「找出失败的运行」这类功能时用得上。
+
+**排序**：按运行 id 倒序（新运行在前）。`WAITING_APPROVAL` 的条目会带 `pendingTool`，其余为 `null`。
 
 ## 完整的交互流程图
 
@@ -316,5 +317,6 @@ type ChatUiState =
 
 - 是否支持**自动继续**（挂起后系统自动恢复，不需要用户点）。目前不做——自动恢复的前提是能可靠判断「用户还想继续」，这个判断很容易做错
 - **撤回已执行的副作用**（比如撤销刚才建的工单）。这是业务补偿逻辑，不在状态机里
-- 挂起的运行**保留多久**（超过期限会被回收成 `CANCELLED`）。暂定 24 小时，实现时确认
+- 挂起的运行**保留多久**：M13 定为 **24 小时**（`ai.agent.suspend-retention-ms`），超时封存为 `CANCELLED`；
+  半截回答足够长时会落一条 `interrupted=true` 的助手消息，刷新历史能直接看到
 - 是否允许用户**跳过**某个工具（让它直接继续）。目前只能同意或拒绝

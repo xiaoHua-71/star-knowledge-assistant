@@ -1,5 +1,6 @@
 package com.xiaohua.star.service;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.xiaohua.star.model.entity.AgentEvent;
 import com.xiaohua.star.model.entity.AgentRun;
 import com.xiaohua.star.model.entity.AgentStep;
@@ -7,6 +8,7 @@ import com.xiaohua.star.model.enums.AgentEventTypeEnum;
 import com.xiaohua.star.model.enums.AgentStepStatusEnum;
 import com.xiaohua.star.model.enums.InterruptTypeEnum;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -129,4 +131,17 @@ public interface AgentStateService {
 
     /** 该会话是否有未结束的运行（PENDING/RUNNING）。用于「截断重发」等操作的前置校验。 */
     boolean hasActiveRun(Long conversationId);
+
+    /** 会话下的运行列表（按 id 倒序分页，新运行在前）。 */
+    IPage<AgentRun> pageRuns(Long conversationId, int current, int pageSize);
+
+    /** 超过保留期、仍处于 SUSPENDED 的运行（超时封存用）。 */
+    List<AgentRun> listSuspendedBefore(LocalDateTime cutoff, int limit);
+
+    /**
+     * 超时封存：条件更新 {@code SUSPENDED → CANCELLED} 并写 endTime。
+     *
+     * @return true = 本次真的封存了（并发续跑时只有一个能成功）
+     */
+    boolean cancelRunIfSuspended(long runId);
 }

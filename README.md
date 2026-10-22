@@ -64,6 +64,8 @@
 - `StreamingChatModel` → 事件表 → SSE，打字机效果
 - `run_start` / `message_delta` / `tool_call` / `tool_result` / `interrupt` / `run_end` / `error` 一套协议
 - **能停、能续、能重连**：停止后挂起，继续时从断点重放已完成的完整轮；断线重连带 `lastEventId` 补发事件
+- **心跳与封存（M13）**：约每 15 秒一个 `ping` 心跳；`SUSPENDED` 超过 24h 自动封存为 `CANCELLED`，
+  半截回答落成 `interrupted=true` 的助手消息
 - 建流失败优雅降级为 JSON 信封 40100 / 40000 / 40400
 
 ### 🎨 演示前端
@@ -212,7 +214,7 @@ JAVA_HOME=/e/Java/jdk-21.0.5 mvn spring-boot:run
 | **Phase 2** | M0–M3 | RAG 从远端搬到本地，评测体系先立起来 | ✅ |
 | **Phase 3** | M4–M6 | 会话、记忆、流式——「能用起来」 | ✅ |
 | **Phase 4** | M7–M10 | 工具调用 + 中断续跑——「像 Agent 了」 | ✅ M7 / M8 / M9 / M10 全部完成 |
-| **Phase 5** | M11–M13 | 知识库管理、可观测性、前端联调——「能交付」 | 🟡 M11（RAG 生命周期）/ M12（可观测性）已完成；M13 契约冻结待做 |
+| **Phase 5** | M11–M13 | 知识库管理、可观测性、前端联调——「能交付」 | ✅ M11 / M12 / M13 全部完成（M13 于 2026-10-22） |
 
 **已落地**：RAG 全链路（混合检索 + RRF + 增量索引）、会话与消息、对话记忆、SSE 流式、工具调用、
 Agent 状态落库与启动恢复、中断/续跑/断线重连、副作用工具人工确认与幂等执行、

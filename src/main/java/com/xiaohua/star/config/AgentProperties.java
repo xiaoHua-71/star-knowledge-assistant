@@ -28,4 +28,10 @@ public class AgentProperties {
      * 也避免一个工具的返回把上下文顶穿。事件里用 {@code truncated=true} 告诉前端结果被截过。
      */
     private int maxToolResultChars = 4000;
+
+    /** SSE {@code ping} 心跳间隔（ms）；<=0 关闭。 */
+    private long ssePingIntervalMs = 15_000L;
+
+    /** {@code SUSPENDED} 运行超过该时长（ms）后封存为 {@code CANCELLED}；<=0 不封存。 */
+    private long suspendRetentionMs = 24L * 60 * 60 * 1000;
 }

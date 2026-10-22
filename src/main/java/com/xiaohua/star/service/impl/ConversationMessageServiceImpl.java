@@ -99,6 +99,14 @@ public class ConversationMessageServiceImpl extends ServiceImpl<ConversationMess
     @Transactional(rollbackFor = Exception.class)
     public ConversationMessage appendMessage(Long conversationId, Long userId, String role,
                                              String content, Integer tokenCount, Long runId) {
+        return appendMessage(conversationId, userId, role, content, tokenCount, runId, false);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ConversationMessage appendMessage(Long conversationId, Long userId, String role,
+                                             String content, Integer tokenCount, Long runId,
+                                             boolean interrupted) {
         Conversation c = lockAndOwn(conversationId, userId);
         int seq = (c.getMessageCount() == null ? 0 : c.getMessageCount()) + 1;
 
@@ -113,7 +121,7 @@ public class ConversationMessageServiceImpl extends ServiceImpl<ConversationMess
         m.setRole(role);
         m.setContent(content);
         m.setPromptVisible(1);
-        m.setInterrupted(0);
+        m.setInterrupted(interrupted ? 1 : 0);
         m.setTokenCount(tokenCount);
         m.setCreateTime(now);
         this.save(m);

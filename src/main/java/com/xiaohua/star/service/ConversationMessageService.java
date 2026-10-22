@@ -38,6 +38,13 @@ public interface ConversationMessageService extends IService<ConversationMessage
                                       String content, Integer tokenCount, Long runId);
 
     /**
+     * 同七参版之前，额外标记这条消息是否被中断截断（超时封存用，M13）。
+     */
+    ConversationMessage appendMessage(Long conversationId, Long userId, String role,
+                                      String content, Integer tokenCount, Long runId,
+                                      boolean interrupted);
+
+    /**
      * 取该会话全部 promptVisible=1 的消息，按 seq 升序。用于重建 prompt（最小闭环不裁剪）。
      */
     List<ConversationMessage> listPromptVisibleAsc(Long conversationId);

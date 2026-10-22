@@ -5,6 +5,7 @@ import com.xiaohua.star.agent.AgentRunner;
 import com.xiaohua.star.agent.AgentStreamHub;
 import com.xiaohua.star.agent.RunContext;
 import com.xiaohua.star.agent.RunInterruptFlag;
+import com.xiaohua.star.agent.SseHeartbeat;
 import com.xiaohua.star.ai.MemoryBuilder;
 import com.xiaohua.star.common.ErrorCode;
 import com.xiaohua.star.config.AgentExecutorConfig;
@@ -74,6 +75,9 @@ public class ChatStreamServiceImpl implements ChatStreamService {
     private AgentStreamHub agentStreamHub;
 
     @Resource
+    private SseHeartbeat sseHeartbeat;
+
+    @Resource
     private RunInterruptFlag interruptFlag;
 
     @Resource
@@ -137,9 +141,19 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         long runId = agentStateService.createRun(
                 request.getConversationId(), userId, userMsg.getId(), agentProperties.getMaxRounds());
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
-        emitter.onTimeout(() -> log.warn("SSE 超时未结束: conversationId={}, runId={}", request.getConversationId(), runId));
-        emitter.onError(t -> log.warn("SSE 异步错误: runId={}", runId, t));
-        emitter.onCompletion(() -> log.debug("SSE 完成: runId={}", runId));
+        Runnable stopHeartbeat = sseHeartbeat.start(emitter);
+        emitter.onTimeout(() -> {
+            stopHeartbeat.run();
+            log.warn("SSE 超时未结束: conversationId={}, runId={}", request.getConversationId(), runId);
+        });
+        emitter.onError(t -> {
+            stopHeartbeat.run();
+            log.warn("SSE 异步错误: runId={}", runId, t);
+        });
+        emitter.onCompletion(() -> {
+            stopHeartbeat.run();
+            log.debug("SSE 完成: runId={}", runId);
+        });
         agentStreamHub.create(runId, emitter);
         AgentEventSink sink = agentStreamHub.sink(runId);
 
