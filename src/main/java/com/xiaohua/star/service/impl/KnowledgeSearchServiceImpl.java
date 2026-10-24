@@ -7,6 +7,7 @@ import com.xiaohua.star.ai.Bm25IndexRegistry;
 import com.xiaohua.star.ai.EmbeddingEngine;
 import com.xiaohua.star.ai.MilvusStoreFactory;
 import com.xiaohua.star.ai.RrfFusion;
+import com.xiaohua.star.ai.SearchOptions;
 import com.xiaohua.star.common.ErrorCode;
 import com.xiaohua.star.config.SearchProperties;
 import com.xiaohua.star.exception.BusinessException;
@@ -54,9 +55,6 @@ import java.util.Map;
 @Service
 public class KnowledgeSearchServiceImpl implements KnowledgeSearchService {
 
-    private static final int DEFAULT_TOP_K = 5;
-    private static final int MAX_TOP_K = 20;
-
     @Resource
     private KnowledgeBaseService knowledgeBaseService;
 
@@ -86,27 +84,37 @@ public class KnowledgeSearchServiceImpl implements KnowledgeSearchService {
 
     @Override
     public KnowledgeSearchResultVO search(Long kbId, KnowledgeSearchRequest request, Long userId) {
-        KnowledgeBase kb = knowledgeBaseService.getOwnedOrThrow(kbId, userId);
-        if (request == null || StrUtil.isBlank(request.getQuery())) {
+        if (request == null) {
+            knowledgeBaseService.getOwnedOrThrow(kbId, userId);
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "查询语句不能为空");
         }
-        int topK = request.getTopK() == null
-                ? DEFAULT_TOP_K
-                : Math.min(Math.max(request.getTopK(), 1), MAX_TOP_K);
+        return searchWithOptions(kbId, request.getQuery(),
+                SearchOptions.from(searchProperties, request.getTopK()), userId);
+    }
+
+    @Override
+    public KnowledgeSearchResultVO searchWithOptions(Long kbId, String query, SearchOptions options, Long userId) {
+        KnowledgeBase kb = knowledgeBaseService.getOwnedOrThrow(kbId, userId);
+        if (StrUtil.isBlank(query)) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "查询语句不能为空");
+        }
+        SearchOptions effective = options == null
+                ? SearchOptions.from(searchProperties, null)
+                : options;
         assertModelMatches(kb);
 
         long start = System.currentTimeMillis();
         KnowledgeSearchResultVO result = new KnowledgeSearchResultVO();
-        result.setQuery(request.getQuery());
+        result.setQuery(query);
 
         // ① 两路召回（各自按相关性有序）
-        List<String> vectorIds = vectorRecall(kb, request.getQuery());
-        List<String> keywordIds = keywordRecall(kb, request.getQuery());
+        List<String> vectorIds = vectorRecall(kb, query, effective);
+        List<String> keywordIds = keywordRecall(kb, query, effective);
 
         // ② RRF 融合：多路列表累加进同一张分数表
         Map<String, Double> fused = RrfFusion.newScoreMap();
-        RrfFusion.accumulate(fused, vectorIds, searchProperties.getRrfK());
-        RrfFusion.accumulate(fused, keywordIds, searchProperties.getRrfK());
+        RrfFusion.accumulate(fused, vectorIds, effective.rrfK());
+        RrfFusion.accumulate(fused, keywordIds, effective.rrfK());
         if (fused.isEmpty()) {
             result.setHits(List.of());
             result.setElapsedMs(System.currentTimeMillis() - start);
@@ -114,17 +122,17 @@ public class KnowledgeSearchServiceImpl implements KnowledgeSearchService {
         }
 
         // ③ 取候选详情（按融合分降序、截断到 maxCandidates）
-        List<String> candidates = RrfFusion.topN(fused, searchProperties.getMaxCandidates());
+        List<String> candidates = RrfFusion.topN(fused, effective.maxCandidates());
         List<KnowledgeSearchResultVO.Hit> hits = buildHits(candidates, fused);
 
         // ④ rerank 精排（可选；失败/关闭都退化为融合顺序）
         ScoringModel rerank = scoringModelProvider.getIfAvailable();
-        if (rerank != null && hits.size() > topK) {
-            hits = rerank(request.getQuery(), rerank, hits);
+        if (effective.rerankAllowed() && rerank != null && hits.size() > effective.topK()) {
+            hits = rerank(query, rerank, hits);
         }
 
         // ⑤ 来源多样性：同一篇文档最多占 maxPerSource 格（不足时用跳过的补齐）
-        hits = selectDiverse(hits, topK, searchProperties.getMaxPerSource());
+        hits = selectDiverse(hits, effective.topK(), effective.maxPerSource());
 
         result.setHits(hits);
         result.setElapsedMs(System.currentTimeMillis() - start);
@@ -136,7 +144,7 @@ public class KnowledgeSearchServiceImpl implements KnowledgeSearchService {
      *
      * <p>失败只记 warn 返回空列表，交给 BM25 那一路顶上——比「任一路挂了就整体返回空」更抗故障。
      */
-    private List<String> vectorRecall(KnowledgeBase kb, String query) {
+    private List<String> vectorRecall(KnowledgeBase kb, String query, SearchOptions options) {
         if (!milvusStoreFactory.collectionExists(kb.getCollectionName())) {
             return List.of();
         }
@@ -145,8 +153,8 @@ public class KnowledgeSearchServiceImpl implements KnowledgeSearchService {
             EmbeddingStore<TextSegment> store = milvusStoreFactory.getStore(kb.getCollectionName(), kb.getDimension());
             return store.search(EmbeddingSearchRequest.builder()
                             .queryEmbedding(queryEmbedding)
-                            .maxResults(searchProperties.getVectorRecall())
-                            .minScore(searchProperties.getMinScore())
+                            .maxResults(options.vectorRecall())
+                            .minScore(options.minScore())
                             .build())
                     .matches().stream()
                     .map(EmbeddingMatch::embeddingId)
@@ -162,12 +170,12 @@ public class KnowledgeSearchServiceImpl implements KnowledgeSearchService {
      *
      * <p>失败只记 warn 返回空列表（只读操作，索引构建异常不该拖垮检索）。
      */
-    private List<String> keywordRecall(KnowledgeBase kb, String query) {
-        if (!searchProperties.isHybridEnabled()) {
+    private List<String> keywordRecall(KnowledgeBase kb, String query, SearchOptions options) {
+        if (!options.hybridEnabled()) {
             return List.of();
         }
         try {
-            return bm25IndexRegistry.search(kb.getId(), query, searchProperties.getBm25Recall())
+            return bm25IndexRegistry.search(kb.getId(), query, options.bm25Recall())
                     .stream()
                     .map(Bm25Index.Doc::vectorId)
                     .toList();
