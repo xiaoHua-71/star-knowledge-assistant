@@ -105,7 +105,7 @@ data:<单行 JSON>
 | `message_snapshot` | `messageId`(可空), `text` | 断线重连补发的**当前全文**（**替换**语义，不是追加，M9） |
 | `error` | `code`, `message`, `runId`, `retryable` | 流已建立后失败；协议里唯一带 `code` 的事件 |
 
-**未实现**：`ping`（心跳）、`todo_update`（计划功能本身未做）。
+**未实现**：`todo_update`（计划功能本身未做）。`ping` 心跳已在 M13 落地（约 15 秒一次、无 `id`、不落库）。
 
 **M10 人工确认的事件顺序**：`tool_call` → `interrupt(APPROVAL_REQUIRED, pendingTool)`（本轮结束、线程释放）
 → 用户 `POST /agent/run/{id}/approve` → 前端重连流 → `tool_result`（执行结果 / 拒绝原因）→ 下一轮 `run_start` → … → `run_end`。
@@ -136,7 +136,7 @@ data:<单行 JSON>
 
 - **断线回放 / 重连**（`GET /agent/run/{runId}/stream`）、**中断 / 续跑**——**M9 已落地**（见 [12](12-中断与恢复的状态机.md) ⑦）。
 - **人工确认**（`interrupt(APPROVAL_REQUIRED)` + `POST /agent/run/{id}/approve`）——**M10 已落地**（见 ⑧）。
-- `ping` 心跳、`todo_update` 未实现。
+- `todo_update` 未实现；`ping` 心跳已随 M13 落地。
 - **检索已从「自动」改为「工具」**（M7，2026-10-14，见 [30](30-工具调用.md) 3.3）：不再在 `run_start` 之前同步检索；检索发生在循环里、由模型调用 `searchKnowledge` 触发，因此 `run_start` 不再被检索推迟。
 - **里程碑事件**的 `id` 是 `agent_event.id`（数据库自增，可比较、可续传）；**`message_delta` 不带 `id`**。重连接口 M9 已实现（`GET /agent/run/{runId}/stream?lastEventId=`），前端应把**最后一个里程碑事件的 id** 作为重连游标。
 
