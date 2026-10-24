@@ -80,6 +80,9 @@ application-local.properties
 milvus-current-collection.txt
 milvus-index-manifest.txt
 
+# ---------- 离线评测报告（运行产物；语料与评估集仍入库）----------
+docs/rag-eval/reports/
+
 # ---------- 本地模型文件（rerank 用的 ONNX 模型要单独下载，体积可达 GB 级）----------
 models/
 

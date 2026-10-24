@@ -38,14 +38,26 @@ public class FileStorageService {
      * 把上传文件写到磁盘，返回<b>相对 storage-dir 的路径</b>（存进 filePath）。
      */
     public String store(MultipartFile file, Long kbId) {
-        String ext = extensionOf(file.getOriginalFilename());
+        try (InputStream in = file.getInputStream()) {
+            return store(in, file.getOriginalFilename(), kbId);
+        } catch (IOException e) {
+            throw new BusinessException(ErrorCode.OPERATION_ERROR, "文件保存失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 从输入流落盘（离线评测导入语料等程序化场景用）。
+     *
+     * <p>仍然沿用 uuid 命名，不信任原始文件名——原始名只作为展示用的
+     * {@code knowledge_document.name}。</p>
+     */
+    public String store(InputStream in, String originalFilename, Long kbId) {
+        String ext = extensionOf(originalFilename);
         String relative = kbId + "/" + UUID.randomUUID() + (ext.isEmpty() ? "" : "." + ext);
         Path target = resolve(relative);
         try {
             Files.createDirectories(target.getParent());
-            try (InputStream in = file.getInputStream()) {
-                Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
-            }
+            Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
             return relative;
         } catch (IOException e) {
             throw new BusinessException(ErrorCode.OPERATION_ERROR, "文件保存失败: " + e.getMessage());

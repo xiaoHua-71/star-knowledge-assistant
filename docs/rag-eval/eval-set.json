@@ -1,0 +1,297 @@
+{
+  "version": 1,
+  "_说明": [
+    "检索评估集：一条用例 = 一个「用户会怎么问」的查询 + 它期望命中哪些文章。",
+    "expectedSources 写路径片段即可（会自动忽略协议/域名/www/锚点/结尾斜杠），也接受完整 URL。",
+    "查询请写成自然问法，不要写「Java后端开发」这类短标签 —— 短标签在各种开关组合下几乎必然同结果，测不出差异。",
+    "enabled 设为 false 可以临时屏蔽一条而不删掉它。",
+    "加/改用例不需要重新编译，改完直接 POST /api/rag/eval 即可。"
+  ],
+  "cases": [
+    {
+      "id": "java-passing-01",
+      "enabled": true,
+      "query": "Java 到底是值传递还是引用传递？为什么说只有值传递？",
+      "expectedSources": ["java/basis/why-there-only-value-passing-in-java.html"],
+      "tags": ["Java基础"],
+      "note": "经典易错题，考察能否捞到专门讲这个的文章"
+    },
+    {
+      "id": "java-bigdecimal-01",
+      "enabled": true,
+      "query": "金额计算为什么不能用 double？应该用什么类型？",
+      "expectedSources": [
+        "java/basis/money-long-vs-bigdecimal.html",
+        "java/basis/bigdecimal.html"
+      ],
+      "tags": ["Java基础"],
+      "note": "跨两篇：一篇讲 long/BigDecimal 取舍，一篇讲 BigDecimal 本身用法"
+    },
+    {
+      "id": "java-proxy-01",
+      "enabled": true,
+      "query": "JDK 动态代理和 CGLIB 有什么区别？Spring AOP 用的是哪种？",
+      "expectedSources": [
+        "java/basis/proxy.html",
+        "system-design/framework/spring/ioc-and-aop.html"
+      ],
+      "tags": ["Java基础", "Spring"],
+      "note": "跨方向问法：代理机制 + Spring AOP 选型，专门用来区分变体差异"
+    },
+    {
+      "id": "java-reflection-01",
+      "enabled": true,
+      "query": "Java 反射怎么调用私有方法？setAccessible 是做什么的？",
+      "expectedSources": ["java/basis/reflection.html"],
+      "tags": ["Java基础"],
+      "note": "概念词密集，考察 BM25 这一路的字面命中能力"
+    },
+    {
+      "id": "jvm-memory-01",
+      "enabled": true,
+      "query": "JVM 的内存区域是怎么划分的？哪些是线程私有的？",
+      "expectedSources": ["java/jvm/memory-area.html"],
+      "tags": ["JVM"],
+      "note": "JVM 方向最基础的一篇"
+    },
+    {
+      "id": "jvm-gc-01",
+      "enabled": true,
+      "query": "JVM 怎么判断一个对象可以被回收？可达性分析是怎么做的？",
+      "expectedSources": ["java/jvm/jvm-garbage-collection.html"],
+      "tags": ["JVM"],
+      "note": "垃圾回收入门问题"
+    },
+    {
+      "id": "jvm-classloader-01",
+      "enabled": true,
+      "query": "什么是双亲委派模型？为什么需要它？",
+      "expectedSources": [
+        "java/jvm/classloader.html",
+        "java/jvm/class-loading-process.html"
+      ],
+      "tags": ["JVM"],
+      "note": "类加载器与类加载过程两篇都相关"
+    },
+    {
+      "id": "jvm-tools-01",
+      "enabled": true,
+      "query": "线上服务 CPU 飙高怎么排查？有哪些常用的 JVM 排查工具？",
+      "expectedSources": [
+        "java/jvm/jdk-monitoring-and-troubleshooting-tools.html",
+        "java/jvm/jvm-parameters-intro.html"
+      ],
+      "tags": ["JVM"],
+      "note": "实战排查题，工具篇 + 参数篇"
+    },
+    {
+      "id": "concurrent-jmm-01",
+      "enabled": true,
+      "query": "volatile 是怎么保证可见性和有序性的？",
+      "expectedSources": [
+        "java/concurrent/jmm.html",
+        "java/concurrent/java-concurrent-questions-01.html"
+      ],
+      "tags": ["并发"],
+      "note": "JMM 专题 + 并发面试题总篇"
+    },
+    {
+      "id": "concurrent-threadlocal-01",
+      "enabled": true,
+      "query": "ThreadLocal 为什么会内存泄漏？怎么正确使用？",
+      "expectedSources": ["java/concurrent/threadlocal.html"],
+      "tags": ["并发"],
+      "note": "高频面试题"
+    },
+    {
+      "id": "concurrent-threadpool-01",
+      "enabled": true,
+      "query": "线程池的核心参数有哪些？提交一个任务后是怎么执行的？",
+      "expectedSources": [
+        "java/concurrent/java-thread-pool-summary.html",
+        "java/concurrent/java-thread-pool-best-practices.html"
+      ],
+      "tags": ["并发"],
+      "note": "原理篇 + 实践篇"
+    },
+    {
+      "id": "concurrent-cas-01",
+      "enabled": true,
+      "query": "CAS 是什么？ABA 问题怎么解决？",
+      "expectedSources": [
+        "java/concurrent/cas.html",
+        "java/concurrent/atomic-classes.html"
+      ],
+      "tags": ["并发"],
+      "note": "CAS 专篇 + 原子类（真实实现）"
+    },
+    {
+      "id": "concurrent-aqs-01",
+      "enabled": true,
+      "query": "AQS 是怎么实现的？ReentrantLock 的加锁流程是怎样的？",
+      "expectedSources": [
+        "java/concurrent/aqs.html",
+        "java/concurrent/reentrantlock.html"
+      ],
+      "tags": ["并发"],
+      "note": "AQS 抽象 + ReentrantLock 落地"
+    },
+    {
+      "id": "concurrent-lock-01",
+      "enabled": true,
+      "query": "乐观锁和悲观锁分别适合什么场景？",
+      "expectedSources": ["java/concurrent/optimistic-lock-and-pessimistic-lock.html"],
+      "tags": ["并发"],
+      "note": "概念对比题"
+    },
+    {
+      "id": "collection-hashmap-01",
+      "enabled": true,
+      "query": "HashMap 的扩容机制是怎样的？为什么容量必须是 2 的幂？",
+      "expectedSources": ["java/collection/hashmap-source-code.html"],
+      "tags": ["集合"],
+      "note": "源码级问题"
+    },
+    {
+      "id": "collection-chm-01",
+      "enabled": true,
+      "query": "ConcurrentHashMap 是怎么保证线程安全的？",
+      "expectedSources": [
+        "java/collection/concurrent-hash-map-source-code.html",
+        "java/concurrent/java-concurrent-collections.html"
+      ],
+      "tags": ["集合", "并发"],
+      "note": "源码篇 + 并发容器总览"
+    },
+    {
+      "id": "collection-list-01",
+      "enabled": true,
+      "query": "ArrayList 和 LinkedList 有什么区别？平时该怎么选？",
+      "expectedSources": [
+        "java/collection/arraylist-source-code.html",
+        "java/collection/linkedlist-source-code.html"
+      ],
+      "tags": ["集合"],
+      "note": "两篇源码都要捞到才算完整"
+    },
+    {
+      "id": "mysql-index-invalidation-01",
+      "enabled": true,
+      "query": "MySQL 索引为什么会失效？哪些写法会导致索引用不上？",
+      "expectedSources": [
+        "database/mysql/mysql-index-invalidation.html",
+        "database/mysql/index-invalidation-caused-by-implicit-conversion.html"
+      ],
+      "tags": ["MySQL"],
+      "note": "索引失效总篇 + 隐式转换专题"
+    },
+    {
+      "id": "mysql-btree-01",
+      "enabled": true,
+      "query": "MySQL 为什么用 B+ 树做索引？和 B 树、哈希索引比好在哪？",
+      "expectedSources": ["database/mysql/mysql-index.html"],
+      "tags": ["MySQL"],
+      "note": "索引原理题"
+    },
+    {
+      "id": "mysql-mvcc-01",
+      "enabled": true,
+      "query": "MVCC 是怎么实现的？它和事务隔离级别是什么关系？",
+      "expectedSources": [
+        "database/mysql/innodb-implementation-of-mvcc.html",
+        "database/mysql/transaction-isolation-level.html"
+      ],
+      "tags": ["MySQL"],
+      "note": "MVCC 实现 + 隔离级别"
+    },
+    {
+      "id": "mysql-sql-flow-01",
+      "enabled": true,
+      "query": "一条 SQL 语句在 MySQL 内部是怎么执行的？",
+      "expectedSources": ["database/mysql/how-sql-executed-in-mysql.html"],
+      "tags": ["MySQL"],
+      "note": "架构流程题"
+    },
+    {
+      "id": "redis-persistence-01",
+      "enabled": true,
+      "query": "Redis 的 RDB 和 AOF 有什么区别？线上该怎么选？",
+      "expectedSources": ["database/redis/redis-persistence.html"],
+      "tags": ["Redis"],
+      "note": "持久化经典题"
+    },
+    {
+      "id": "redis-cache-problems-01",
+      "enabled": true,
+      "query": "缓存穿透、缓存击穿、缓存雪崩分别是什么？怎么解决？",
+      "expectedSources": [
+        "database/redis/cache-basics.html",
+        "database/redis/3-commonly-used-cache-read-and-write-strategies.html"
+      ],
+      "tags": ["Redis"],
+      "note": "缓存基础篇 + 读写策略篇"
+    },
+    {
+      "id": "redis-skiplist-01",
+      "enabled": true,
+      "query": "Redis 的 zset 底层为什么要用跳表而不是红黑树？",
+      "expectedSources": ["database/redis/redis-skiplist.html"],
+      "tags": ["Redis"],
+      "note": "数据结构题，术语专有性强，适合看 BM25 的贡献"
+    },
+    {
+      "id": "redis-cluster-01",
+      "enabled": true,
+      "query": "Redis 集群是怎么做分片的？槽位是怎么分配的？",
+      "expectedSources": ["database/redis/redis-cluster.html"],
+      "tags": ["Redis"],
+      "note": "集群方案题"
+    },
+    {
+      "id": "spring-ioc-aop-01",
+      "enabled": true,
+      "query": "Spring 的 IOC 和 AOP 分别是什么？AOP 有哪些应用场景？",
+      "expectedSources": ["system-design/framework/spring/ioc-and-aop.html"],
+      "tags": ["Spring"],
+      "note": "Spring 最核心的两个概念"
+    },
+    {
+      "id": "spring-autowire-01",
+      "enabled": true,
+      "query": "Spring Boot 的自动装配是怎么实现的？@SpringBootApplication 做了什么？",
+      "expectedSources": [
+        "system-design/framework/spring/spring-boot-auto-assembly-principles.html",
+        "system-design/framework/spring/springboot-source-code.html"
+      ],
+      "tags": ["Spring"],
+      "note": "自动装配原理篇 + SpringBoot 源码篇"
+    },
+    {
+      "id": "spring-transaction-01",
+      "enabled": true,
+      "query": "Spring 事务什么情况下会失效？事务的传播行为有哪些？",
+      "expectedSources": ["system-design/framework/spring/spring-transaction.html"],
+      "tags": ["Spring"],
+      "note": "踩坑高频题"
+    },
+    {
+      "id": "mybatis-cache-01",
+      "enabled": true,
+      "query": "MyBatis 的一级缓存和二级缓存有什么区别？",
+      "expectedSources": ["system-design/framework/mybatis/mybatis-interview.html"],
+      "tags": ["MyBatis"],
+      "note": "MyBatis 方向唯一一篇"
+    },
+    {
+      "id": "testing-interview-01",
+      "enabled": true,
+      "query": "软件测试面试一般会问哪些内容？测试用例怎么设计？",
+      "expectedSources": [
+        "knowledge/testing.txt",
+        "developer.baidu.com/article/detail.html?id=4647986"
+      ],
+      "tags": ["软件测试"],
+      "note": "测试方向是已知短板（只有这两份内容），这条能直接暴露覆盖度"
+    }
+  ]
+}
