@@ -167,3 +167,16 @@ knowledge:
     # ⚠️ 不要照抄 salary-leap 的 0.2。0.2 是远端 text-embedding-v2 的分布；
     # 本地 bge-small-zh 连无关问题都给 0.676（M1 实测），0.2 形同虚设。默认不过滤。
     min-score: 0.0
+
+# 离线评测（M1.5，见 knowledge/60）。语料与评估集在 docs/rag-eval/，报告目录已 gitignore。
+rag:
+  eval:
+    # 生产必须关：这会暴露一组耗时很长的评测接口（必须登录，但仍是 dev-only 能力）
+    http-enabled: true
+    eval-set-file: docs/rag-eval/eval-set.json
+    corpus-dir: docs/rag-eval/corpus
+    report-dir: docs/rag-eval/reports
+    corpus-kb-name: rag-eval-corpus
+    # 留空 = 自动创建/复用专用用户 rag-eval；填了就使用该用户（其知识库列表会多一个评测库）
+    # user-id:
+    default-variants: [all-on, no-hybrid, no-diversity, no-rerank, topk-10]
