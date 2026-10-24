@@ -60,6 +60,14 @@
 - `GET /tools/logs` 查明细，`GET /tools/logs/summary` 看 token、成本、失败与重放次数
 - **写日志失败不影响对话**；价格未配置时成本写 `NULL`，不伪装成 0
 
+### 📏 离线评测（M1.5）
+- **94 篇语料 + 30 条带标注查询 + 5 个变体**，把「检索有没有变好」变成可复现的数字
+- 指标：Hit@K / MRR / Recall / Precision / Diversity / 空结果率 / P50·P95
+- 变体对比：全开 / 关混合 / 关多样性限制 / 关 rerank / topK=10
+- 未命中自动分类为「**不在库**（补数据）」或「**检索漏掉**（调检索）」
+- 两种触发：opt-in `RagEvalIT` 或 dev-only `POST /rag/eval`；报告落 `docs/rag-eval/reports/`
+- 当前基线：全开 **Hit@5 86.7% / MRR 0.598 / Recall 68.9%**（详见 [knowledge/60](knowledge/60-离线评测.md)）
+
 ### ⚡ 流式输出（SSE）
 - `StreamingChatModel` → 事件表 → SSE，打字机效果
 - `run_start` / `message_delta` / `tool_call` / `tool_result` / `interrupt` / `run_end` / `error` 一套协议
@@ -77,7 +85,7 @@
 ## 🏗️ 架构分层
 
 ```
-接入层   controller     user / conversation / chat / kb(知识库) / tools
+接入层   controller     user / conversation / chat / kb(知识库) / tools / rag-eval(dev-only)
                             │  DTO / VO，统一 BaseResponse 信封
 编排层   agent          AgentRunner  ReAct 主循环（LLM → 工具 → LLM …）
                         AgentToolRegistry  工具注册与契约校验
@@ -88,6 +96,7 @@
 能力层   检索  RetrievalService   向量召回 + BM25 + RRF + rerank
         索引  KbIndexService      解析 → 切片 → 向量化 → 入 Milvus
         工具  *Tool               查时间、查知识库 …（可扩展）
+        评测  RagEvalService      语料导入 + 变体检索 + 指标报告
                             │
 模型层   对话模型   ChatModel       DeepSeek-V4.1-Flash（远端，流式）
         向量模型   EmbeddingModel  本地 ONNX bge-small-zh-v15（512 维）
@@ -201,6 +210,7 @@ JAVA_HOME=/e/Java/jdk-21.0.5 mvn spring-boot:run
 | **知识库** | `POST /api/kb/create` · `POST /api/kb/{kbId}/doc/upload` · `doc/url` · `POST /api/kb/{id}/rebuild` · `POST /api/kb/{id}/search` |
 | **工具** | `GET /api/tools/list`（能力清单） · `GET /api/tools/logs`（调用记录） · `GET /api/tools/logs/summary`（token/成本汇总） |
 | **Agent 运行** | `POST /api/agent/run/{id}/interrupt` · `resume` · `approve`（人工确认） · `GET /api/agent/run/{id}` · `GET /api/agent/run/{id}/stream` |
+| **离线评测（dev-only）** | `POST /api/rag/eval` · `GET /api/rag/eval/status` · `GET /api/rag/eval/report/latest` · `POST /api/rag/eval/corpus/rebuild` |
 
 > 完整契约见 [`frontend/`](frontend/00-索引与阅读顺序.md)。
 
@@ -211,17 +221,16 @@ JAVA_HOME=/e/Java/jdk-21.0.5 mvn spring-boot:run
 | 阶段 | 里程碑 | 目标 | 状态 |
 |---|---|---|---|
 | **Phase 1** | — | 骨架 + 用户模块，端到端跑通 | ✅ |
-| **Phase 2** | M0–M3 | RAG 从远端搬到本地，评测体系先立起来 | ✅ |
+| **Phase 2** | M0–M3 + M1.5 | RAG 从远端搬到本地，评测体系先立起来 | ✅（M1.5 于 2026-10-24 补齐） |
 | **Phase 3** | M4–M6 | 会话、记忆、流式——「能用起来」 | ✅ |
 | **Phase 4** | M7–M10 | 工具调用 + 中断续跑——「像 Agent 了」 | ✅ M7 / M8 / M9 / M10 全部完成 |
 | **Phase 5** | M11–M13 | 知识库管理、可观测性、前端联调——「能交付」 | ✅ M11 / M12 / M13 全部完成（M13 于 2026-10-22） |
 
 **已落地**：RAG 全链路（混合检索 + RRF + 增量索引）、会话与消息、对话记忆、SSE 流式、工具调用、
 Agent 状态落库与启动恢复、中断/续跑/断线重连、副作用工具人工确认与幂等执行、
-**LLM/工具调用日志与 token/成本汇总**。
+LLM/工具调用日志与 token/成本汇总、**离线检索评测基线（M1.5）**。
 
-**待做**：`GET /agent/run/{id}/steps`、运行列表、`ping` 心跳、超时封存、离线评测基线；
-可观测性的日志归档/分区与脱敏。
+**待做**：可观测性的日志归档/分区与脱敏；`agent_todo` / `todo_update` 计划功能（可选、未排期）。
 
 ---
 
@@ -257,6 +266,7 @@ star-knowledge-assistant/
 ├── sql/                4 份 DDL（user / knowledge / conversation / agent）
 ├── knowledge/          后端设计文档（文档带动实现）
 ├── frontend/           前后端接口契约
+├── docs/rag-eval/      评测语料 + 评估集（报告目录已 gitignore）
 ├── docker-compose.yml  Milvus 2.5.27（etcd + minio + milvus）
 └── models/             本地重排模型（体积大，已 gitignore）
 ```
@@ -269,6 +279,14 @@ star-knowledge-assistant/
 # 不依赖外部环境的测试（推荐，本地平时跑这个）
 JAVA_HOME=/e/Java/jdk-21.0.5 mvn test -Dtest=LocalEmbeddingModelTest -DfailIfNoSpecifiedTests=false
 
+# 评测相关纯单测（不依赖外部环境）
+JAVA_HOME=/e/Java/jdk-21.0.5 mvn test \
+  -Dtest='Eval*Test,RetrievalMetricsTest,RagEvalSetTest,SearchOptionsTest,RagEvalControllerTest' \
+  -DfailIfNoSpecifiedTests=false
+
+# 离线评测集成测试（需要 MySQL / Redis / Milvus；首次导入语料约 1~2 分钟）
+JAVA_HOME=/e/Java/jdk-21.0.5 mvn test -Dtest=RagEvalIT -DfailIfNoSpecifiedTests=false
+
 # 全量（MainApplicationTests 需要 MySQL / Redis / 邮件配置齐备）
 JAVA_HOME=/e/Java/jdk-21.0.5 mvn test
 ```
@@ -279,7 +297,7 @@ JAVA_HOME=/e/Java/jdk-21.0.5 mvn test
 
 - 本项目是独立项目，用户模块从另一个 Spring Boot 项目移植并做了裁剪，基础设施（Milvus 等）独立部署。
 - Milvus 用的是 LangChain4j 的 **legacy `langchain4j-milvus`** 模块（LangChain4j 2.0 会移除它），这是一个**有到期日的刻意权衡**，理由见 [knowledge/01](knowledge/01-总体架构与路线图.md)。
-- 检索链路里的召回数、`context-window`、`temperature` 等参数**尚未标定**，是起点不是结论——等评测集（[knowledge/60](knowledge/00-索引与阅读顺序.md)）立起来再用数据说话。
+- 检索链路里的召回数、`minScore`、切片大小等参数**已有回归基线但尚未标定**，是起点不是结论——改动前后请用 [离线评测](knowledge/60-离线评测.md) 比 delta，再决定是否保留。
 
 ---
 
