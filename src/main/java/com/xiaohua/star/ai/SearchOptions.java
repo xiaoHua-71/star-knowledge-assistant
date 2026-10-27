@@ -75,6 +75,12 @@ public record SearchOptions(boolean hybridEnabled,
                 maxPerSource, value, rerankAllowed, topK);
     }
 
+    /** 同时覆盖向量与 BM25 两路召回数（标定用；两路口径不同，暂不拆开调）。 */
+    public SearchOptions withRecall(int value) {
+        return new SearchOptions(hybridEnabled, value, value, rrfK, maxCandidates,
+                maxPerSource, minScore, rerankAllowed, topK);
+    }
+
     /**
      * 写进评估报告的参数快照 —— 光看变体名说不出 topK 和召回数是多少。
      */

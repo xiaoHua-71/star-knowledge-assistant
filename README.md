@@ -230,7 +230,8 @@ JAVA_HOME=/e/Java/jdk-21.0.5 mvn spring-boot:run
 Agent 状态落库与启动恢复、中断/续跑/断线重连、副作用工具人工确认与幂等执行、
 LLM/工具调用日志与 token/成本汇总、**离线检索评测基线（M1.5）**。
 
-**待做**：可观测性的日志归档/分区与脱敏；`agent_todo` / `todo_update` 计划功能（可选、未排期）。
+**待做**：可观测性的日志归档/分区与脱敏；`agent_todo` / `todo_update` 计划功能（可选、未排期）；
+检索的 `rrf-k` 与切片参数标定（召回数 / `minScore` 已于 2026-10-27 完成）。
 
 ---
 
@@ -297,7 +298,8 @@ JAVA_HOME=/e/Java/jdk-21.0.5 mvn test
 
 - 本项目是独立项目，用户模块从另一个 Spring Boot 项目移植并做了裁剪，基础设施（Milvus 等）独立部署。
 - Milvus 用的是 LangChain4j 的 **legacy `langchain4j-milvus`** 模块（LangChain4j 2.0 会移除它），这是一个**有到期日的刻意权衡**，理由见 [knowledge/01](knowledge/01-总体架构与路线图.md)。
-- 检索链路里的召回数、`minScore`、切片大小等参数**已有回归基线但尚未标定**，是起点不是结论——改动前后请用 [离线评测](knowledge/60-离线评测.md) 比 delta，再决定是否保留。
+- 检索链路的召回数与 `minScore` 已于 2026-10-27 用 [离线评测](knowledge/60-离线评测.md) 标定（15 / 15 / 0.8）；
+  `rrf-k`、切片大小等仍是起点不是结论——改动前后请用离线评测比 delta，再决定是否保留。
 
 ---
 

@@ -7,8 +7,9 @@ import org.springframework.stereotype.Component;
 /**
  * 检索链路参数（application.yml 的 knowledge.search.*）
  *
- * <p>这套参数从 salary-leap 移植过来，但<b>语料不同，一律标「未标定」</b>——
- * 它们是能跑的起点，不是最优值。要定最优值必须先有评测集（见 knowledge/60）。
+ * <p>起点从 salary-leap 移植，但语料不同。{@code vectorRecall / bm25Recall / minScore}
+ * 已于 2026-10-27 用 30 条评估集标定（记录见 knowledge/60 第十一节）；
+ * {@code rrfK / maxCandidates / maxPerSource} 仍是经验值，未标定。
  */
 @Component
 @ConfigurationProperties(prefix = "knowledge.search")
@@ -21,14 +22,14 @@ public class SearchProperties {
     private boolean hybridEnabled = true;
 
     /**
-     * 向量这一路召回多少候选（未标定）
+     * 向量这一路召回多少候选（已标定：20 → 15）
      */
-    private int vectorRecall = 20;
+    private int vectorRecall = 15;
 
     /**
-     * BM25 这一路召回多少候选（未标定）
+     * BM25 这一路召回多少候选（已标定：20 → 15）
      */
-    private int bm25Recall = 20;
+    private int bm25Recall = 15;
 
     /**
      * RRF 平滑常数，原论文默认 60。越大越削弱「某一路排第一」的叠加优势（未标定）
@@ -46,12 +47,12 @@ public class SearchProperties {
     private int maxPerSource = 2;
 
     /**
-     * 向量召回的最小相似度。
+     * 向量召回的最小相似度（只作用于向量这一路，BM25 不受影响）。
      *
-     * <p><b>默认 0.0（不过滤），这是刻意的，不要照抄 salary-leap 的 0.2。</b>
-     * 0.2 是远端 text-embedding-v2 的分布；本地 bge-small-zh 连「今天天气怎么样」这种
-     * 完全不相关的问题都能给到 0.676（M1 实测，见 knowledge/20），0.2 等于形同虚设。
-     * 真正可用的阈值必须等评测集标定（未标定，待 knowledge/60）。
+     * <p><b>0.8 是 2026-10-27 用 30 条评估集标定的，不能跨 embedding 模型搬运。</b>
+     * 本地 bge-small-zh 的分数被压在 0.67~0.9 的窄带里：0.4~0.75 完全不过滤任何结果，
+     * 0.85 起开始有期望来源被误杀。0.8 是「确实过滤了弱相关、但没丢掉任何命中」的最后一档。
+     * 换模型/换语料后必须重跑评测（见 knowledge/60 第十一节）。
      */
-    private double minScore = 0.0;
+    private double minScore = 0.8;
 }

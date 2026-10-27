@@ -53,8 +53,35 @@ class EvalVariantTest {
     }
 
     @Test
+    void minScore变体只改最低分() {
+        SearchOptions options = EvalVariant.MIN_SCORE_090.apply(base());
+
+        assertThat(options.minScore()).isEqualTo(0.9);
+        assertThat(options.vectorRecall()).isEqualTo(15);
+        assertThat(options.bm25Recall()).isEqualTo(15);
+        assertThat(options.topK()).isEqualTo(5);
+    }
+
+    @Test
+    void 关最低分过滤把阈值置零() {
+        assertThat(EvalVariant.NO_MIN_SCORE.apply(base()).minScore()).isZero();
+    }
+
+    @Test
+    void recall变体同时改两路召回数() {
+        SearchOptions options = EvalVariant.RECALL_30.apply(base());
+
+        assertThat(options.vectorRecall()).isEqualTo(30);
+        assertThat(options.bm25Recall()).isEqualTo(30);
+        assertThat(options.topK()).isEqualTo(5);
+        assertThat(options.minScore()).isEqualTo(0.8);
+    }
+
+    @Test
     void 按id解析且未知id给可用列表() {
         assertThat(EvalVariant.byId("no-hybrid")).isEqualTo(EvalVariant.NO_HYBRID);
+        assertThat(EvalVariant.byId("recall-30")).isEqualTo(EvalVariant.RECALL_30);
+        assertThat(EvalVariant.byId("min-score-090")).isEqualTo(EvalVariant.MIN_SCORE_090);
         assertThatThrownBy(() -> EvalVariant.byId("no-rewrite"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("all-on")

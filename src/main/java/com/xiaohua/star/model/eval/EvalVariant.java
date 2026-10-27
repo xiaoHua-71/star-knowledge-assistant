@@ -31,7 +31,25 @@ public enum EvalVariant {
     NO_RERANK("no-rerank", "关 rerank 精排", base -> base.withRerank(false)),
 
     /** 多给五条，看正确答案有多少排在 6~10 位 —— 也就是「召回的天花板」 */
-    TOPK_10("topk-10", "全开但取前 10 条", base -> base.withTopK(10));
+    TOPK_10("topk-10", "全开但取前 10 条", base -> base.withTopK(10)),
+
+    /*
+     * 以下为参数标定/回归变体（标定记录见 knowledge/60 第十一节），默认不跑。
+     * minScore 只作用于向量那一路（BM25 不受影响），分值是余弦相似度而非 RRF 融合分。
+     * 标定过程中试过的 0.4~0.95、recall 5~50 只保留有诊断价值的几档，避免枚举无限膨胀。
+     */
+
+    /** 关掉最低分过滤，量化当前 0.8 阈值带来的收益 */
+    NO_MIN_SCORE("min-score-0", "关掉向量最低分过滤", base -> base.withMinScore(0.0)),
+
+    /** 更激进的阈值：命中率不降但会换掉两条用例，作为「不要调过头」的警戒线 */
+    MIN_SCORE_090("min-score-090", "向量召回最低分 0.9（激进）", base -> base.withMinScore(0.9)),
+
+    /** 比默认 15 更小的召回数，量化「少给候选」的代价 */
+    RECALL_10("recall-10", "双路各召回 10 条", base -> base.withRecall(10)),
+
+    /** 比默认 15 更大的召回数，量化「多给候选」是帮忙还是帮倒忙 */
+    RECALL_30("recall-30", "双路各召回 30 条", base -> base.withRecall(30));
 
     private final String id;
     private final String label;

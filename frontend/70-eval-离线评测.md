@@ -95,7 +95,7 @@
     {
       "variantId": "all-on",
       "label": "全开（生产基线）",
-      "options": "hybrid=true, vectorRecall=20, ..., topK=5",
+      "options": "hybrid=true, vectorRecall=15, minScore=0.8, ..., topK=5",
       "metrics": {
         "total": 30, "failed": 0,
         "hitRate": 0.9, "mrr": 0.81, "recall": 0.78,

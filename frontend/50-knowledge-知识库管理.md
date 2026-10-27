@@ -5,7 +5,8 @@
 > - ✅ **已实现**：分类树、知识库 CRUD、文档上传/网页入库/列表/重命名/删除/单篇重建、构建进度轮询、检索测试。
 >   解析走官方 `langchain4j-document-parser-apache-{pdfbox,poi}`；TXT/MD 直读、HTML/网页用 jsoup。
 > - ✅ **检索已是混合检索**（M3）：向量 + BM25 双路召回 → RRF 融合 → 来源多样性（同一篇文档默认最多占 2 格）。
->   各参数在 `knowledge.search.*`（**未标定**，见 [knowledge/23](../knowledge/23-混合检索与融合.md)）。
+>   召回数与 `minScore` 已于 2026-10-27 标定（15 / 15 / 0.8），其余参数在 `knowledge.search.*`
+>   （见 [knowledge/23](../knowledge/23-混合检索与融合.md)）。
 > - ✅ **重建已是真增量**（M3）：`full=false` 逐篇比对切片指纹，只重算变化的切片（见 [knowledge/24](../knowledge/24-增量索引.md)）。
 > - ⚠️ **`/search` 的 `score` 语义随配置变**：开 rerank 时是 **rerank 分**；关 rerank 时是 **RRF 融合分**
 >   （很小，约 1/60 量级；即使关掉 `hybrid-enabled` 也是单路 RRF，只是恰好等价于按向量顺序）。

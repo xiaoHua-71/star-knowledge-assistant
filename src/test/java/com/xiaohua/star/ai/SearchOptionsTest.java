@@ -15,12 +15,12 @@ class SearchOptionsTest {
         SearchOptions options = SearchOptions.from(new SearchProperties(), null);
 
         assertThat(options.hybridEnabled()).isTrue();
-        assertThat(options.vectorRecall()).isEqualTo(20);
-        assertThat(options.bm25Recall()).isEqualTo(20);
+        assertThat(options.vectorRecall()).isEqualTo(15);
+        assertThat(options.bm25Recall()).isEqualTo(15);
         assertThat(options.rrfK()).isEqualTo(60);
         assertThat(options.maxCandidates()).isEqualTo(30);
         assertThat(options.maxPerSource()).isEqualTo(2);
-        assertThat(options.minScore()).isZero();
+        assertThat(options.minScore()).isEqualTo(0.8);
         assertThat(options.rerankAllowed()).isTrue();
         assertThat(options.topK()).isEqualTo(SearchOptions.DEFAULT_TOP_K);
     }
@@ -44,6 +44,9 @@ class SearchOptionsTest {
         assertThat(base.withMaxPerSource(0).maxPerSource()).isZero();
         assertThat(base.withTopK(10).topK()).isEqualTo(10);
         assertThat(base.withMinScore(0.5).minScore()).isEqualTo(0.5);
+        assertThat(base.withRecall(30).vectorRecall()).isEqualTo(30);
+        assertThat(base.withRecall(30).bm25Recall()).isEqualTo(30);
+        assertThat(base.withRecall(30).topK()).isEqualTo(5);
     }
 
     @Test

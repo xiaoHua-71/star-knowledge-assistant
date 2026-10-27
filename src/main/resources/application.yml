@@ -155,18 +155,20 @@ ai:
 knowledge:
   storage-dir: ./uploads
 
-  # 检索链路参数（见 knowledge/23）。⚠️ 以下数值全部「未标定」：
-  # 沿用 salary-leap 的经验值作为起点，本项目语料不同，要定最优值必须先有评测集（knowledge/60）。
+  # 检索链路参数（见 knowledge/23）。
+  # vector-recall / bm25-recall / min-score 已于 2026-10-27 用 30 条评估集标定（见 knowledge/60 第十一节）；
+  # rrf-k / max-candidates / max-per-source 仍是经验值，未标定。
   search:
     hybrid-enabled: true    # 关掉退化成纯向量检索
-    vector-recall: 20       # 向量这一路召回多少候选
-    bm25-recall: 20         # BM25 这一路召回多少候选
+    vector-recall: 15       # 向量这一路召回多少候选（20 → 15：Recall +2.2pp，命中不丢）
+    bm25-recall: 15         # BM25 这一路召回多少候选
     rrf-k: 60               # RRF 平滑常数，原论文默认 60
     max-candidates: 30      # 融合去重后、送进 rerank 前的候选上限
     max-per-source: 2       # 同一文档最多占最终 topK 的几个位置；<=0 不限制
-    # ⚠️ 不要照抄 salary-leap 的 0.2。0.2 是远端 text-embedding-v2 的分布；
-    # 本地 bge-small-zh 连无关问题都给 0.676（M1 实测），0.2 形同虚设。默认不过滤。
-    min-score: 0.0
+    # ⚠️ 0.8 是本地 bge-small-zh 在本项目语料上标出来的，不能跨模型搬运。
+    # 0.4~0.75 在这套语料上完全不过滤（分数被压在窄带里），0.85 起开始误杀命中。
+    # 换 embedding 模型或换语料后必须重跑评测再改。
+    min-score: 0.8
 
 # 离线评测（M1.5，见 knowledge/60）。语料与评估集在 docs/rag-eval/，报告目录已 gitignore。
 rag:
