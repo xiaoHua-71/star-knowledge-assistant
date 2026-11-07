@@ -140,7 +140,9 @@ public class ChatStreamServiceImpl implements ChatStreamService {
         // 8. 创建运行 + 建流并登记进 hub（循环之外先建好，通道以 runId 为键）
         long runId = agentStateService.createRun(
                 request.getConversationId(), userId, userMsg.getId(), agentProperties.getMaxRounds());
+
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+
         Runnable stopHeartbeat = sseHeartbeat.start(emitter);
         emitter.onTimeout(() -> {
             stopHeartbeat.run();

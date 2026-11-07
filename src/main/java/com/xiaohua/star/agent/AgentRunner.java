@@ -172,7 +172,7 @@ public class AgentRunner {
         int seq = seq0;
         String lastText = "";
 
-        try {
+        try {//进入agent循环
             while (round < maxRounds) {
                 // 安全点 1：轮首（模型调用前）。命中则挂起，此时无在飞步骤、状态最干净
                 Optional<InterruptTypeEnum> sp1 = interruptFlag.get(runId);
